@@ -1,0 +1,2 @@
+# Raw market data files are stored here.
+# Strictly read-only: application code must never overwrite or modify files in this directory.

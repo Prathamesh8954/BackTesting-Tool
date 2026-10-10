@@ -1,0 +1,11 @@
+[project]
+name = "backtesting-tool"
+version = "0.1.0"
+description = "Deterministic local historical trading research system"
+readme = "README.md"
+requires-python = ">=3.12"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-v --strict-markers"
