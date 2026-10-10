@@ -94,3 +94,19 @@ def test_load_does_not_silently_drop_rows(tmp_path: Path):
     assert len(df_loaded) == 3
     assert pd.isna(df_loaded["timestamp"].iloc[1])
     assert pd.isna(df_loaded["open"].iloc[1])
+
+
+def test_load_duplicate_normalized_columns(tmp_path: Path):
+    """
+    Verifies that duplicate column names resulting from trimming/lowercasing
+    (e.g., 'Close' and ' close ') trigger a clear ValueError listing the conflict.
+    """
+    csv_file = tmp_path / "duplicate_cols.csv"
+    csv_content = (
+        "timestamp,open,high,low,Close, close ,volume\n"
+        "2026-01-01 09:30:00,100,105,95,102,102.5,1000\n"
+    )
+    csv_file.write_text(csv_content)
+
+    with pytest.raises(ValueError, match="Duplicate normalized column name"):
+        load_market_data(csv_file)

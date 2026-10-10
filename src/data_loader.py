@@ -43,7 +43,25 @@ def load_market_data(file_path: Union[str, Path]) -> pd.DataFrame:
         raise ValueError(f"File '{path.name}' is empty (0 rows).")
 
     # Standardize column headers to lowercase and trimmed strings
-    df.columns = [str(col).strip().lower() for col in df.columns]
+    normalized_cols = [str(col).strip().lower() for col in df.columns]
+
+    # Detect duplicate column names caused by normalization
+    seen = {}
+    duplicates = set()
+    for orig_col, norm_col in zip(df.columns, normalized_cols):
+        if norm_col in seen:
+            duplicates.add(norm_col)
+        else:
+            seen[norm_col] = orig_col
+
+    if duplicates:
+        conflicting_cols = [str(col) for col in df.columns if str(col).strip().lower() in duplicates]
+        raise ValueError(
+            f"Duplicate normalized column name(s) detected: {sorted(duplicates)}. "
+            f"Conflicting original columns: {conflicting_cols}"
+        )
+
+    df.columns = normalized_cols
 
     # Parse timestamps if timestamp column is present
     if "timestamp" in df.columns:

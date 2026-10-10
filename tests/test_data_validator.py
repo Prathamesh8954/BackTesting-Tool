@@ -239,7 +239,9 @@ def test_timestamp_gap_is_warning_only(valid_ohlcv_df: pd.DataFrame):
     assert len(report.warnings) >= 1
     gap_warn = next(w for w in report.warnings if w.code == "TIMESTAMP_GAP")
     assert 3 in gap_warn.row_indices
-    assert "gap_duration" in gap_warn.details
+    assert gap_warn.details["previous_timestamp"] == "2026-01-01 11:30:00"
+    assert gap_warn.details["current_timestamp"] == "2026-01-05 09:30:00"
+    assert gap_warn.details["gap_duration"] == "3 days 22:00:00"
 
 
 def test_empty_dataframe():
@@ -248,3 +250,132 @@ def test_empty_dataframe():
 
     assert report.is_valid is False
     assert any(e.code == "EMPTY_DATAFRAME" for e in report.errors)
+
+
+def test_non_numeric_price_value(valid_ohlcv_df: pd.DataFrame):
+    """Verifies that non-numeric text in OHLC prices is reported as fatal error."""
+    df = valid_ohlcv_df.astype({"open": "object"}).copy()
+    df.loc[1, "open"] = "INVALID_PRICE"
+
+    report = validate_market_data(df)
+
+    assert report.is_valid is False
+    err = next(e for e in report.errors if e.code == "NON_NUMERIC_VALUE")
+    assert 1 in err.row_indices
+    assert err.details["column"] == "open"
+
+
+def test_non_numeric_volume_value(valid_ohlcv_df: pd.DataFrame):
+    """
+    Verifies that non-numeric volume text is a fatal error and NOT silently converted
+    into a missing-volume (NULL_VOLUME) warning.
+    """
+    df = valid_ohlcv_df.astype({"volume": "object"}).copy()
+    df.loc[2, "volume"] = "CORRUPT_VOLUME_TEXT"
+
+    report = validate_market_data(df)
+
+    assert report.is_valid is False
+    assert any(e.code == "NON_NUMERIC_VALUE" for e in report.errors)
+    assert not any(w.code == "NULL_VOLUME" for w in report.warnings)
+    err = next(e for e in report.errors if e.code == "NON_NUMERIC_VALUE")
+    assert 2 in err.row_indices
+    assert err.details["column"] == "volume"
+
+
+def test_non_finite_price_and_volume(valid_ohlcv_df: pd.DataFrame):
+    """
+    Verifies that inf and -inf values in OHLC prices and volume are fatal errors,
+    and do NOT generate misleading NEGATIVE_VOLUME, ZERO_VOLUME, or NON_POSITIVE_PRICE diagnostics.
+    """
+    df = valid_ohlcv_df.copy()
+    df.loc[0, "high"] = float("inf")
+    df.loc[1, "close"] = float("-inf")
+    df.loc[2, "volume"] = float("inf")
+    df.loc[3, "volume"] = float("-inf")
+
+    report = validate_market_data(df)
+
+    assert report.is_valid is False
+    inf_errs = [e for e in report.errors if e.code == "NON_FINITE_VALUE"]
+    assert len(inf_errs) == 3
+    violating_cols = {e.details["column"] for e in inf_errs}
+    assert violating_cols == {"high", "close", "volume"}
+
+    vol_err = next(e for e in inf_errs if e.details["column"] == "volume")
+    assert vol_err.row_indices == (2, 3)
+    assert vol_err.details["count"] == 2
+
+    # Confirm that non-finite values do NOT generate secondary misleading diagnostics
+    assert not any(e.code == "NEGATIVE_VOLUME" for e in report.errors)
+    assert not any(w.code == "ZERO_VOLUME" for w in report.warnings)
+    assert not any(e.code == "NON_POSITIVE_PRICE" for e in report.errors)
+
+
+def test_gap_detection_with_duplicate_index_labels():
+    """
+    Verifies that timestamp gap detection does not crash and correctly reports
+    the exact previous and current timestamps when the DataFrame index contains duplicate labels.
+    """
+    df = pd.DataFrame(
+        {
+            "timestamp": [
+                pd.Timestamp("2026-01-01 09:30"),
+                pd.Timestamp("2026-01-01 10:30"),
+                pd.Timestamp("2026-01-05 09:30"),  # weekend gap
+                pd.Timestamp("2026-01-05 10:30"),
+            ],
+            "open": [100.0, 101.0, 102.0, 103.0],
+            "high": [105.0, 105.0, 105.0, 105.0],
+            "low": [95.0, 95.0, 95.0, 95.0],
+            "close": [102.0, 102.0, 102.0, 102.0],
+            "volume": [100.0, 100.0, 100.0, 100.0],
+        },
+        index=[10, 10, 20, 20],  # Duplicate labels, but rows across gap (10 and 20) are distinct
+    )
+
+    report = validate_market_data(df, expected_interval="1h")
+
+    assert report.is_valid is True
+    assert len(report.errors) == 0
+    assert any(w.code == "TIMESTAMP_GAP" for w in report.warnings)
+    gap_warn = next(w for w in report.warnings if w.code == "TIMESTAMP_GAP")
+    assert gap_warn.row_indices == (20,)
+    assert gap_warn.details["previous_timestamp"] == "2026-01-01 10:30:00"
+    assert gap_warn.details["current_timestamp"] == "2026-01-05 09:30:00"
+    assert gap_warn.details["gap_duration"] == "3 days 23:00:00"
+
+
+def test_unsorted_timestamps_skips_gap_detection(valid_ohlcv_df: pd.DataFrame):
+    """
+    Verifies that unsorted timestamps are reported as fatal errors and do NOT emit
+    misleading inferred timestamp gap warnings.
+    """
+    df = valid_ohlcv_df.copy()
+    # Disrupt chronological sequence
+    df.loc[2, "timestamp"] = pd.Timestamp("2025-01-01 00:00")
+
+    report = validate_market_data(df, expected_interval="1h")
+
+    assert report.is_valid is False
+    assert any(e.code == "UNSORTED_TIMESTAMPS" for e in report.errors)
+    # Crucially: no false gap warning should be emitted on an unsorted sequence
+    assert not any(w.code == "TIMESTAMP_GAP" for w in report.warnings)
+
+
+def test_duplicate_timestamps_skips_gap_detection(valid_ohlcv_df: pd.DataFrame):
+    """
+    Verifies that duplicate timestamps are reported as fatal errors and do NOT emit
+    misleading inferred timestamp gap warnings.
+    """
+    df = valid_ohlcv_df.copy()
+    # Introduce duplicate timestamp and large jump afterward
+    df.loc[2, "timestamp"] = df.loc[1, "timestamp"]
+    df.loc[3, "timestamp"] = pd.Timestamp("2026-01-10 09:30")
+
+    report = validate_market_data(df, expected_interval="1h")
+
+    assert report.is_valid is False
+    assert any(e.code == "DUPLICATE_TIMESTAMPS" for e in report.errors)
+    # Crucially: no false gap warning should be emitted when duplicates are present
+    assert not any(w.code == "TIMESTAMP_GAP" for w in report.warnings)

@@ -42,6 +42,8 @@ def validate_market_data(
       * Missing required columns ('timestamp', 'open', 'high', 'low', 'close', 'volume')
       * Empty DataFrame
       * Null or NaN values in core fields (timestamp, open, high, low, close)
+      * Non-numeric values in OHLCV columns
+      * Non-finite values (inf, -inf) in OHLC price or volume fields
       * Unparseable timestamps
       * Duplicate timestamps
       * Non-chronological (unsorted) timestamps
@@ -153,10 +155,12 @@ def validate_market_data(
     else:
         parsed_ts = ts_series
 
+    has_duplicate_timestamps = False
     if parsed_ts is not None and not parsed_ts.isna().all():
         # Check duplicate timestamps (Error)
         dup_mask = parsed_ts.duplicated(keep=False)
         if dup_mask.any():
+            has_duplicate_timestamps = True
             dup_indices = tuple(df.index[dup_mask].tolist())
             errors.append(
                 IssueDetail(
@@ -184,31 +188,37 @@ def validate_market_data(
                     )
                 )
 
-            # Check timestamp gaps (Warning only)
-            if expected_interval is not None:
-                threshold_gap = (
-                    pd.to_timedelta(expected_interval)
-                    if isinstance(expected_interval, str)
-                    else expected_interval
-                )
-            else:
-                # Use 3x median interval as standard threshold for flagging potential gaps
-                median_delta = diffs.median()
-                threshold_gap = 3 * median_delta if (pd.notna(median_delta) and median_delta > pd.Timedelta(0)) else None
+            # Gap analysis is skipped if timestamps have duplicates or are unsorted
+            if not unordered_mask.any() and not has_duplicate_timestamps:
+                if expected_interval is not None:
+                    threshold_gap = (
+                        pd.to_timedelta(expected_interval)
+                        if isinstance(expected_interval, str)
+                        else expected_interval
+                    )
+                else:
+                    median_delta = diffs.median()
+                    threshold_gap = (
+                        3 * median_delta
+                        if (pd.notna(median_delta) and median_delta > pd.Timedelta(0))
+                        else None
+                    )
 
-            if threshold_gap is not None and threshold_gap > pd.Timedelta(0):
-                gap_mask = diffs > threshold_gap
-                if gap_mask.any():
-                    gap_indices = tuple(valid_ts.index[gap_mask].tolist())
-                    for idx in gap_indices:
-                        loc = valid_ts.index.get_loc(idx)
-                        prev_ts = valid_ts.iloc[loc - 1]
-                        curr_ts = valid_ts.iloc[loc]
+                if threshold_gap is not None and threshold_gap > pd.Timedelta(0):
+                    # diffs maintains 1:1 positional alignment with valid_ts (diffs.iloc[0] is NaT).
+                    # Any matching index in gap_pos_indices is strictly >= 1, safely mapping pos - 1 to previous bar.
+                    gap_pos_indices = np.where(diffs > threshold_gap)[0]
+                    for pos in gap_pos_indices:
+                        if pos < 1:
+                            continue
+                        prev_ts = valid_ts.iloc[pos - 1]
+                        curr_ts = valid_ts.iloc[pos]
+                        row_idx = valid_ts.index[pos]
                         warnings.append(
                             IssueDetail(
                                 code="TIMESTAMP_GAP",
                                 message=f"Timestamp gap of {curr_ts - prev_ts} detected between {prev_ts} and {curr_ts}.",
-                                row_indices=(idx,),
+                                row_indices=(row_idx,),
                                 details={
                                     "previous_timestamp": str(prev_ts),
                                     "current_timestamp": str(curr_ts),
@@ -217,26 +227,46 @@ def validate_market_data(
                             )
                         )
 
-    # 6. OHLC Numeric & Geometric Invariant Validation (Fatal Errors)
-    # Convert series to numeric non-destructively for mathematical comparison
-    try:
-        open_s = pd.to_numeric(df[open_col], errors="coerce")
-        high_s = pd.to_numeric(df[high_col], errors="coerce")
-        low_s = pd.to_numeric(df[low_col], errors="coerce")
-        close_s = pd.to_numeric(df[close_col], errors="coerce")
-        vol_s = pd.to_numeric(df[vol_col], errors="coerce")
-    except Exception as e:
-        errors.append(
-            IssueDetail(
-                code="NUMERIC_CONVERSION_ERROR",
-                message=f"Failed to parse numeric columns: {e}",
-            )
-        )
-        return ValidationReport(is_valid=False, errors=errors, warnings=warnings)
+    # 6. OHLC Numeric & Finiteness Invariant Validation (Fatal Errors)
+    ohlc_series_converted: dict[str, pd.Series] = {}
+    for p_name, p_col in [
+        ("open", open_col),
+        ("high", high_col),
+        ("low", low_col),
+        ("close", close_col),
+    ]:
+        raw_s = df[p_col]
+        conv_s = pd.to_numeric(raw_s, errors="coerce")
+        ohlc_series_converted[p_name] = conv_s
 
-    # Non-positive prices (Error)
-    for p_name, p_series in [("open", open_s), ("high", high_s), ("low", low_s), ("close", close_s)]:
-        non_pos_mask = (p_series <= 0.0) & p_series.notna()
+        # Non-numeric: original value was not null, but numeric coercion failed
+        non_num_mask = raw_s.notna() & conv_s.isna()
+        if non_num_mask.any():
+            violating_indices = tuple(df.index[non_num_mask].tolist())
+            errors.append(
+                IssueDetail(
+                    code="NON_NUMERIC_VALUE",
+                    message=f"Column '{p_name}' contains non-numeric value(s).",
+                    row_indices=violating_indices,
+                    details={"column": p_name, "count": len(violating_indices)},
+                )
+            )
+
+        # Non-finite: inf / -inf
+        inf_mask = np.isinf(conv_s)
+        if inf_mask.any():
+            violating_indices = tuple(df.index[inf_mask].tolist())
+            errors.append(
+                IssueDetail(
+                    code="NON_FINITE_VALUE",
+                    message=f"Column '{p_name}' contains non-finite (inf/-inf) value(s).",
+                    row_indices=violating_indices,
+                    details={"column": p_name, "count": len(violating_indices)},
+                )
+            )
+
+        # Non-positive prices: price <= 0.0 (finite values only)
+        non_pos_mask = (conv_s <= 0.0) & conv_s.notna() & ~inf_mask
         if non_pos_mask.any():
             violating_indices = tuple(df.index[non_pos_mask].tolist())
             errors.append(
@@ -248,8 +278,77 @@ def validate_market_data(
                 )
             )
 
+    # 7. Volume Numeric, Finiteness, and Range Validation
+    raw_vol = df[vol_col]
+    conv_vol = pd.to_numeric(raw_vol, errors="coerce")
+
+    # Non-numeric volume: original value was not null, but failed numeric conversion (Fatal Error)
+    vol_non_num_mask = raw_vol.notna() & conv_vol.isna()
+    if vol_non_num_mask.any():
+        violating_indices = tuple(df.index[vol_non_num_mask].tolist())
+        errors.append(
+            IssueDetail(
+                code="NON_NUMERIC_VALUE",
+                message="Volume column contains non-numeric value(s).",
+                row_indices=violating_indices,
+                details={"column": "volume", "count": len(violating_indices)},
+            )
+        )
+
+    # Non-finite volume: inf / -inf (Fatal Error)
+    vol_inf_mask = np.isinf(conv_vol)
+    if vol_inf_mask.any():
+        violating_indices = tuple(df.index[vol_inf_mask].tolist())
+        errors.append(
+            IssueDetail(
+                code="NON_FINITE_VALUE",
+                message="Volume column contains non-finite (inf/-inf) value(s).",
+                row_indices=violating_indices,
+                details={"column": "volume", "count": len(violating_indices)},
+            )
+        )
+
+    # Negative Volume: volume < 0.0 (Fatal Error)
+    vol_neg_mask = (conv_vol < 0.0) & conv_vol.notna() & ~vol_inf_mask
+    if vol_neg_mask.any():
+        violating_indices = tuple(df.index[vol_neg_mask].tolist())
+        errors.append(
+            IssueDetail(
+                code="NEGATIVE_VOLUME",
+                message=f"Negative volume (< 0.0) on {len(violating_indices)} row(s).",
+                row_indices=violating_indices,
+                details={"count": len(violating_indices)},
+            )
+        )
+
+    # Zero Volume: volume == 0.0 (Warning Only)
+    vol_zero_mask = (conv_vol == 0.0) & conv_vol.notna() & ~vol_inf_mask
+    if vol_zero_mask.any():
+        violating_indices = tuple(df.index[vol_zero_mask].tolist())
+        warnings.append(
+            IssueDetail(
+                code="ZERO_VOLUME",
+                message=f"Zero volume (volume == 0.0) detected on {len(violating_indices)} row(s).",
+                row_indices=violating_indices,
+                details={"count": len(violating_indices)},
+            )
+        )
+
+    # 8. OHLC Geometric Invariants (Evaluated only on valid finite records)
+    open_s = ohlc_series_converted["open"]
+    high_s = ohlc_series_converted["high"]
+    low_s = ohlc_series_converted["low"]
+    close_s = ohlc_series_converted["close"]
+
+    valid_finite_mask = (
+        open_s.notna() & np.isfinite(open_s) &
+        high_s.notna() & np.isfinite(high_s) &
+        low_s.notna() & np.isfinite(low_s) &
+        close_s.notna() & np.isfinite(close_s)
+    )
+
     # High < Low (Error)
-    h_lt_l = (high_s < low_s) & high_s.notna() & low_s.notna()
+    h_lt_l = (high_s < low_s) & valid_finite_mask
     if h_lt_l.any():
         violating_indices = tuple(df.index[h_lt_l].tolist())
         errors.append(
@@ -262,7 +361,7 @@ def validate_market_data(
         )
 
     # High < Open (Error)
-    h_lt_o = (high_s < open_s) & high_s.notna() & open_s.notna()
+    h_lt_o = (high_s < open_s) & valid_finite_mask
     if h_lt_o.any():
         violating_indices = tuple(df.index[h_lt_o].tolist())
         errors.append(
@@ -275,7 +374,7 @@ def validate_market_data(
         )
 
     # High < Close (Error)
-    h_lt_c = (high_s < close_s) & high_s.notna() & close_s.notna()
+    h_lt_c = (high_s < close_s) & valid_finite_mask
     if h_lt_c.any():
         violating_indices = tuple(df.index[h_lt_c].tolist())
         errors.append(
@@ -288,7 +387,7 @@ def validate_market_data(
         )
 
     # Low > Open (Error)
-    l_gt_o = (low_s > open_s) & low_s.notna() & open_s.notna()
+    l_gt_o = (low_s > open_s) & valid_finite_mask
     if l_gt_o.any():
         violating_indices = tuple(df.index[l_gt_o].tolist())
         errors.append(
@@ -301,40 +400,13 @@ def validate_market_data(
         )
 
     # Low > Close (Error)
-    l_gt_c = (low_s > close_s) & low_s.notna() & close_s.notna()
+    l_gt_c = (low_s > close_s) & valid_finite_mask
     if l_gt_c.any():
         violating_indices = tuple(df.index[l_gt_c].tolist())
         errors.append(
             IssueDetail(
                 code="LOW_GREATER_THAN_CLOSE",
                 message=f"Low is greater than Close on {len(violating_indices)} row(s).",
-                row_indices=violating_indices,
-                details={"count": len(violating_indices)},
-            )
-        )
-
-    # 7. Volume Invariants
-    # Negative Volume (Fatal Error)
-    neg_vol = (vol_s < 0.0) & vol_s.notna()
-    if neg_vol.any():
-        violating_indices = tuple(df.index[neg_vol].tolist())
-        errors.append(
-            IssueDetail(
-                code="NEGATIVE_VOLUME",
-                message=f"Negative volume (< 0.0) on {len(violating_indices)} row(s).",
-                row_indices=violating_indices,
-                details={"count": len(violating_indices)},
-            )
-        )
-
-    # Zero Volume (Warning Only)
-    zero_vol = (vol_s == 0.0) & vol_s.notna()
-    if zero_vol.any():
-        violating_indices = tuple(df.index[zero_vol].tolist())
-        warnings.append(
-            IssueDetail(
-                code="ZERO_VOLUME",
-                message=f"Zero volume (volume == 0.0) detected on {len(violating_indices)} row(s).",
                 row_indices=violating_indices,
                 details={"count": len(violating_indices)},
             )
