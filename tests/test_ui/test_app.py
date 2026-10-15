@@ -9,6 +9,7 @@ import pytest
 
 streamlit_testing = pytest.importorskip("streamlit.testing.v1")
 
+from src.metrics import MetricsConsistencyError  # noqa: E402
 from src.ui import workflow  # noqa: E402
 
 APP_PATH = Path(__file__).resolve().parents[2] / "app.py"
@@ -65,3 +66,63 @@ def test_app_end_to_end_backtest(demo_raw_dir):
     # The engine recorded one completed trade and displayed it.
     trades_tables = [frame.value for frame in at.dataframe]
     assert any(isinstance(frame, pd.DataFrame) and "direction" in frame.columns for frame in trades_tables)
+
+
+def test_app_renders_performance_panel_and_drawdown(demo_raw_dir):
+    """M7: the M4 performance panel and the M5 drawdown chart appear after a run."""
+    at = streamlit_testing.AppTest.from_file(APP_PATH, default_timeout=30).run()
+
+    at.selectbox[0].select("demo.csv").run()
+    at.text_area[0].set_value(DEMO_STRATEGY).run()
+    at.button[0].click().run()
+
+    assert not at.exception
+    # A metric-calculation failure would surface here; it must not occur.
+    assert not at.error
+
+    labels = [metric.label for metric in at.metric]
+    # The M7 performance fields are rendered...
+    for expected in (
+        "Closed trades",
+        "Breakeven trades",
+        "Win rate",
+        "Expectancy per trade",
+        "Profit factor",
+        "Average bars held",
+        "Max drawdown",
+        "Max drawdown %",
+        "Reconciliation difference",
+    ):
+        assert expected in labels, expected
+    # ...without displacing the accounting summary (D1).
+    for expected in ("Initial capital", "Final equity", "Completed trades", "Fills", "Rejections"):
+        assert expected in labels, expected
+
+    headers = [subheader.value for subheader in at.subheader]
+    assert "Performance metrics" in headers
+    # D3: the drawdown chart sits directly beneath the equity curve.
+    assert headers.index("Equity curve") + 1 == headers.index("Drawdown (%)")
+
+
+def test_app_surfaces_metric_error_instead_of_hiding_panel(demo_raw_dir, monkeypatch):
+    """A MetricsConsistencyError must be shown to the user, not silently swallowed."""
+    def _raise_consistency_error(result):
+        raise MetricsConsistencyError("synthetic P&L mismatch")
+
+    # app.py resolves workflow.performance_summary at call time, so patching the
+    # module attribute is enough to simulate the failure.
+    monkeypatch.setattr(workflow, "performance_summary", _raise_consistency_error)
+
+    at = streamlit_testing.AppTest.from_file(APP_PATH, default_timeout=30).run()
+
+    at.selectbox[0].select("demo.csv").run()
+    at.text_area[0].set_value(DEMO_STRATEGY).run()
+    at.button[0].click().run()
+
+    assert not at.exception
+    assert any("accounting consistency check" in error.value for error in at.error)
+    # The failure is contained: the rest of the results view still renders.
+    headers = [subheader.value for subheader in at.subheader]
+    assert "Equity curve" in headers
+    assert "Drawdown (%)" in headers
+    assert "Trades" in headers

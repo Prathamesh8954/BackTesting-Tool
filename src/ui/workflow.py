@@ -17,6 +17,7 @@ import pandas as pd
 from src.data_loader import load_market_data
 from src.data_validator import IssueDetail, ValidationReport, validate_market_data
 from src.execution.models import BacktestResult
+from src.metrics import compute_drawdown_series, compute_metrics
 from src.strategy.base import Strategy
 from src.strategy.context import StrategyContext
 from src.strategy.models import OrderAction, OrderType, StrategyDecision
@@ -354,3 +355,134 @@ def result_summary(result: BacktestResult) -> list[tuple[str, str]]:
         ("Rejections", f"{len(result.rejections)}"),
         ("Open position", "None" if result.is_flat else f"{result.open_direction} x{result.open_quantity:g}"),
     ]
+
+
+# Milestone 7 display formatting. ``_UNDEFINED`` is the single rendering of an
+# undefined (``None``) metric: never a substituted zero.
+_UNDEFINED = "n/a"
+
+
+def _format_money(value: Optional[float]) -> str:
+    """Formats currency with thousands separators; ``None`` stays undefined."""
+    return _UNDEFINED if value is None else f"{value:,.2f}"
+
+
+def _format_ratio(value: Optional[float]) -> str:
+    """Formats a unitless ratio to two decimals; ``None`` stays undefined."""
+    return _UNDEFINED if value is None else f"{value:,.2f}"
+
+
+def _format_percent_points(value: Optional[float]) -> str:
+    """Formats an already-scaled percentage (percentage points, M4/M5 style)."""
+    return _UNDEFINED if value is None else f"{value:,.2f}%"
+
+
+def _format_percent_fraction(value: Optional[float]) -> str:
+    """Formats a 0-1 fraction (the M4 win rate) as a percentage."""
+    return _UNDEFINED if value is None else f"{value * 100:.2f}%"
+
+
+def _format_bar_index(value: Optional[int]) -> str:
+    """Formats a bar index; ``None`` means no such bar exists."""
+    return _UNDEFINED if value is None else str(value)
+
+
+def performance_summary(result: BacktestResult) -> list[tuple[str, str]]:
+    """Ordered (label, value) rows for the Milestone 7 performance panel.
+
+    Read-only: every figure is taken from the Milestone 4 ``compute_metrics``
+    report and merely formatted here, so the panel can never disagree with the
+    metrics library. Undefined metrics (``None``, e.g. a win rate with no
+    closed trades) render as ``"n/a"`` and are never replaced with zero.
+
+    ``MetricsConsistencyError`` is deliberately **not** caught here: it
+    propagates so the caller can show the failure instead of hiding the panel.
+    """
+    report = compute_metrics(result)
+    rows: list[tuple[str, str]] = [
+        # Closed-trade statistics (M4)
+        ("Closed trades", str(report.closed_trade_count)),
+        ("Winning trades", str(report.winning_trades)),
+        ("Losing trades", str(report.losing_trades)),
+        ("Breakeven trades", str(report.breakeven_trades)),
+        ("Win rate", _format_percent_fraction(report.win_rate)),
+        ("All trades winning", "Yes" if report.all_trades_winning else "No"),
+        ("Gross realized P&L", _format_money(report.gross_realized_pnl)),
+        ("Net realized P&L", _format_money(report.net_realized_pnl)),
+        ("Total P&L", _format_money(report.total_pnl)),
+        ("Total return", _format_percent_points(report.total_return_pct)),
+        ("Average winning trade", _format_money(report.average_winning_trade)),
+        ("Average losing trade", _format_money(report.average_losing_trade)),
+        ("Expectancy per trade", _format_money(report.expectancy)),
+        ("Profit factor", _format_ratio(report.profit_factor)),
+        ("Average bars held", _format_ratio(report.average_bars_held)),
+        # Maximum drawdown (M4), currency and percentage computed independently
+        ("Max drawdown", _format_money(report.drawdown.currency)),
+        ("Max drawdown %", _format_percent_points(report.drawdown.pct)),
+        (
+            "Max drawdown currency peak bar",
+            _format_bar_index(report.drawdown.currency_peak_bar_index),
+        ),
+        (
+            "Max drawdown currency trough bar",
+            _format_bar_index(report.drawdown.currency_trough_bar_index),
+        ),
+        ("Max drawdown % peak bar", _format_bar_index(report.drawdown.pct_peak_bar_index)),
+        (
+            "Max drawdown % trough bar",
+            _format_bar_index(report.drawdown.pct_trough_bar_index),
+        ),
+        # Informational open-position summary (M4/F3: unrealized P&L stays gross)
+        ("Open position", "None" if report.open_position is None else f"{report.open_position.direction} x{report.open_position.quantity:g}"),
+        ("Reconciliation difference", _format_money(report.reconciliation_difference)),
+    ]
+    if report.open_position is not None:
+        position = report.open_position
+        rows.extend(
+            [
+                ("Open unrealized P&L (gross)", _format_money(position.unrealized_pnl_gross)),
+                ("Open entry price", _format_money(position.entry_price)),
+                (
+                    "Open entry bar",
+                    _format_bar_index(position.entry_bar_index),
+                ),
+                (
+                    "Open entry timestamp",
+                    _UNDEFINED if position.entry_timestamp is None else str(position.entry_timestamp),
+                ),
+                ("Open entry commission", _format_money(position.entry_commission)),
+                ("Open mark price", _format_money(position.mark_price)),
+            ]
+        )
+    return rows
+
+
+def drawdown_to_dataframe(result: BacktestResult) -> pd.DataFrame:
+    """Per-bar drawdown path for display (Milestone 5 series, read-only).
+
+    Wraps ``compute_drawdown_series`` over the same ``(bar_index, equity)`` pairs
+    the engine recorded, using the run's ``initial_capital`` as the peak anchor,
+    so the chart cannot diverge from the M4 maximum-drawdown summary.
+
+    Returns a timestamp-indexed frame with ``decline_pct`` (percentage points)
+    and ``decline_currency`` columns. An empty equity curve yields an empty
+    frame, matching :func:`equity_to_dataframe`.
+    """
+    series = compute_drawdown_series(
+        [(point.bar_index, point.equity) for point in result.equity_curve],
+        result.initial_capital,
+    )
+    rows = [
+        {
+            "timestamp": equity_point.timestamp,
+            "decline_pct": drawdown_point.decline_pct,
+            "decline_currency": drawdown_point.decline_currency,
+        }
+        # The series preserves input order and bar indices, so the n-th point
+        # always describes the n-th equity point.
+        for equity_point, drawdown_point in zip(result.equity_curve, series.points)
+    ]
+    frame = pd.DataFrame(rows)
+    if not frame.empty:
+        frame = frame.set_index("timestamp")
+    return frame

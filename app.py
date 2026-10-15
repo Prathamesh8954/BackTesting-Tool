@@ -22,6 +22,7 @@ import streamlit as st
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from src.execution import EngineConfig, EngineConfigError, run_backtest  # noqa: E402
+from src.metrics import MetricsConsistencyError  # noqa: E402
 from src.strategy.validation import StrategyValidationError  # noqa: E402
 from src.ui import workflow  # noqa: E402
 
@@ -78,12 +79,36 @@ def _render_results(result) -> None:
     for index, (label, value) in enumerate(summary):
         columns[index % 3].metric(label, value)
 
+    # M7: read-only Milestone 4 performance report. It supplements — never
+    # replaces — the accounting summary above, and no figure is re-derived here.
+    st.subheader("Performance metrics")
+    try:
+        performance = workflow.performance_summary(result)
+    except MetricsConsistencyError as exc:
+        st.error(
+            "Performance metrics could not be computed: the result failed an "
+            f"accounting consistency check. ({exc})"
+        )
+    else:
+        columns = st.columns(3)
+        for index, (label, value) in enumerate(performance):
+            columns[index % 3].metric(label, value)
+
     st.subheader("Equity curve")
     equity = workflow.equity_to_dataframe(result)
     if equity.empty:
         st.info("No equity data was produced.")
     else:
         st.line_chart(equity["equity"])
+
+    # M7: per-bar percentage drawdown (Milestone 5 series), directly beneath the
+    # equity curve.
+    st.subheader("Drawdown (%)")
+    drawdown = workflow.drawdown_to_dataframe(result)
+    if drawdown.empty:
+        st.info("No drawdown data was produced.")
+    else:
+        st.line_chart(drawdown["decline_pct"])
 
     st.subheader("Trades")
     trades = workflow.trades_to_dataframe(result)

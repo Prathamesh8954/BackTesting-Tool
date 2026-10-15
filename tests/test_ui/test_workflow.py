@@ -2,10 +2,18 @@ import pandas as pd
 import pytest
 
 from src.execution import EngineConfig, run_backtest
+from src.metrics import MetricsConsistencyError
 from src.strategy.base import Strategy
 from src.strategy.models import OrderAction, StrategyDecision
 from src.ui import workflow
 from tests.test_execution.helpers import ScriptedStrategy, make_df
+from tests.test_metrics.helpers import (
+    do_nothing_result,
+    make_result,
+    make_trade,
+    open_long_result,
+    three_trade_result,
+)
 
 
 def _write_csv(path, df: pd.DataFrame) -> None:
@@ -191,3 +199,153 @@ def test_run_result_dataframe_builders():
     summary = dict(workflow.result_summary(result))
     assert "Final equity" in summary
     assert summary["Completed trades"] == "1"
+
+
+# ------------------------------------------------------------------ Milestone 7
+# Display-only tests for the performance panel and the drawdown chart. Every
+# expected string below is hand-computed from the fixture's known trades and
+# equity path, not copied from the implementation.
+
+
+def test_accounting_summary_labels_unchanged_by_m7():
+    """D1: the M7 panel supplements the accounting summary; it must not alter it."""
+    labels = [label for label, _ in workflow.result_summary(three_trade_result())]
+    assert labels == [
+        "Initial capital",
+        "Final equity",
+        "Total P&L",
+        "Total return",
+        "Realized P&L",
+        "Unrealized P&L",
+        "Completed trades",
+        "Winning / losing",
+        "Fills",
+        "Rejections",
+        "Open position",
+    ]
+
+
+def test_performance_summary_formats_report_fields():
+    """Hand-computed M4 values, formatted for the M7 panel.
+
+    Fixture: long win +1000, short loss -2000, long loss -1000; equity path
+    [100000, 100500, 101000, 101000, 99000, 99500, 98000].
+    """
+    summary = dict(workflow.performance_summary(three_trade_result()))
+
+    assert summary["Closed trades"] == "3"
+    assert summary["Winning trades"] == "1"
+    assert summary["Losing trades"] == "2"
+    assert summary["Breakeven trades"] == "0"
+    assert summary["Win rate"] == "33.33%"
+    assert summary["All trades winning"] == "No"
+    assert summary["Gross realized P&L"] == "-2,000.00"
+    assert summary["Net realized P&L"] == "-2,000.00"
+    assert summary["Total P&L"] == "-2,000.00"
+    assert summary["Total return"] == "-2.00%"
+    assert summary["Average winning trade"] == "1,000.00"
+    assert summary["Average losing trade"] == "-1,500.00"
+    assert summary["Expectancy per trade"] == "-666.67"
+    assert summary["Profit factor"] == "0.33"
+    assert summary["Average bars held"] == "1.00"
+
+    # Max drawdown: peak 101000 at bar 3, trough 98000 at bar 6 (3000 / 101000).
+    assert summary["Max drawdown"] == "3,000.00"
+    assert summary["Max drawdown %"] == "2.97%"
+    assert summary["Max drawdown currency peak bar"] == "3"
+    assert summary["Max drawdown currency trough bar"] == "6"
+    assert summary["Max drawdown % peak bar"] == "3"
+    assert summary["Max drawdown % trough bar"] == "6"
+
+    assert summary["Open position"] == "None"
+    assert summary["Reconciliation difference"] == "0.00"
+    # Flat run: the open-position detail rows are not applicable and are absent.
+    assert [label for label in summary if label.startswith("Open ")] == ["Open position"]
+
+
+def test_performance_summary_renders_undefined_metrics_as_na():
+    """D2: undefined (None) metrics render as 'n/a', never as a substituted zero."""
+    summary = dict(workflow.performance_summary(do_nothing_result()))
+
+    assert summary["Closed trades"] == "0"
+    assert summary["Win rate"] == "n/a"
+    assert summary["Expectancy per trade"] == "n/a"
+    assert summary["Average winning trade"] == "n/a"
+    assert summary["Average losing trade"] == "n/a"
+    assert summary["Profit factor"] == "n/a"
+    assert summary["Average bars held"] == "n/a"
+    assert summary["All trades winning"] == "No"
+    # Sanity: the undefined rendering is distinct from any zero-like value.
+    assert summary["Win rate"] != "0.00%"
+    # Counts remain zero (M4 additive-total policy) rather than "n/a".
+    assert summary["Winning trades"] == "0"
+    assert summary["Losing trades"] == "0"
+    assert summary["Breakeven trades"] == "0"
+
+
+def test_performance_summary_includes_open_position_details():
+    """Open position: LONG x100 filled at bar 1 @ 100.00 with 5.00 commission.
+
+    Final equity 100795 (cash 89995 + 100 x 108), so total P&L is +795 while
+    gross unrealized P&L is +800; the F3 difference is the -5.00 entry
+    commission. The equity path only rises, so drawdown is zero and the
+    peak/trough bar indices are undefined.
+    """
+    summary = dict(workflow.performance_summary(open_long_result()))
+
+    assert summary["Open position"] == "LONG x100"
+    assert summary["Open unrealized P&L (gross)"] == "800.00"
+    assert summary["Open entry price"] == "100.00"
+    assert summary["Open entry bar"] == "1"
+    assert summary["Open entry commission"] == "5.00"
+    assert summary["Open mark price"] == "108.00"
+    assert summary["Reconciliation difference"] == "-5.00"
+    assert summary["Closed trades"] == "0"
+    assert summary["Win rate"] == "n/a"
+    assert summary["Profit factor"] == "n/a"
+    assert summary["Max drawdown"] == "0.00"
+    assert summary["Max drawdown %"] == "0.00%"
+    assert summary["Max drawdown currency peak bar"] == "n/a"
+    assert summary["Max drawdown currency trough bar"] == "n/a"
+
+
+def test_performance_summary_propagates_metrics_consistency_error():
+    """The panel must surface a consistency failure, not swallow it."""
+    inconsistent = make_result([make_trade(-100.0)], realized_pnl=-999.0)
+
+    with pytest.raises(MetricsConsistencyError):
+        workflow.performance_summary(inconsistent)
+
+
+def test_drawdown_to_dataframe_matches_m5_series():
+    result = three_trade_result()
+    frame = workflow.drawdown_to_dataframe(result)
+
+    assert list(frame.columns) == ["decline_pct", "decline_currency"]
+    assert frame.index.name == "timestamp"
+    assert len(frame) == len(result.equity_curve)
+
+    # Hand-computed from the equity path: peak 101000 (bars 2-3), then
+    # declines of 2000 / 1500 / 3000 on bars 4 / 5 / 6.
+    assert list(frame["decline_currency"]) == pytest.approx(
+        [0.0, 0.0, 0.0, 0.0, 2000.0, 1500.0, 3000.0]
+    )
+    assert list(frame["decline_pct"]) == pytest.approx(
+        [0.0, 0.0, 0.0, 0.0, 1.9801980198019802, 1.4851485148514852, 2.9702970297029703]
+    )
+
+    # The chart's worst point must equal the panel's maximum-drawdown figures.
+    summary = dict(workflow.performance_summary(result))
+    assert summary["Max drawdown"] == f"{frame['decline_currency'].max():,.2f}"
+    assert summary["Max drawdown %"] == f"{frame['decline_pct'].max():,.2f}%"
+
+
+def test_drawdown_to_dataframe_empty_equity_curve():
+    empty = make_result([], equity_prices=())
+
+    frame = workflow.drawdown_to_dataframe(empty)
+    assert frame.empty
+
+    summary = dict(workflow.performance_summary(empty))
+    assert summary["Closed trades"] == "0"
+    assert summary["Max drawdown"] == "0.00"
