@@ -11,6 +11,8 @@ The architecture enforces a strict separation between data ingestion, strategy l
 * **Milestone 1 (Complete)**: Read-only CSV/Parquet data loader and strict non-mutating OHLCV data validator.
 * **Milestone 2 (Complete)**: Universal, strategy-independent interface (`Strategy`), simulation context with lookahead protection (`StrategyContext`), immutable decision model (`StrategyDecision`), and structural request validation (`validate_decision`).
 * **Milestone 3 (Complete)**: Order execution simulation engine — fill pricing, transaction costs (slippage/commissions), risk-based position sizing, and intrabar ambiguity resolution.
+* **Milestone 4 (Complete)**: Read-only performance metrics derived from the engine result — win/loss/breakeven counts, win rate, expectancy, profit factor, averages, average bars held, and maximum currency/percentage drawdown. Trade logs, equity curves, and the drawdown baseline come from the Milestone 3 execution records.
+* **Milestone 5 (Working tree, not yet committed)**: A read-only, library-only per-bar drawdown series built on the Milestone 4 drawdown conventions.
 * **Milestone 6 (Initial workflow)**: An initial Streamlit chart-data-to-backtest front-end (`app.py`). The full UI and the remaining planned milestones are not yet complete.
 
 ---
@@ -166,19 +168,23 @@ The workflow guides you through:
 
 ## 5. Current vs. Future Milestone Capabilities
 
-### Currently Implemented (Milestones 1, 2 & 3)
+### Currently Implemented (Milestones 1, 2, 3 & 4)
 * **Read-Only Ingestion**: CSV and Parquet files loaded without modifying disk files.
 * **Non-Mutating Validation**: Comprehensive OHLC invariant checks, non-numeric checks, and separation of fatal errors from warnings.
 * **Strategy Interface**: Universal `Strategy.on_bar(context)` lifecycle supporting stateful strategies.
 * **Anti-Lookahead Context**: `StrategyContext.history()` guarantees no access to future bars ($t > t_i$). Detached copies protect engine data from strategy mutations.
 * **Structural Decision Validation**: `validate_decision()` rejects non-finite prices, incompatible order types, and contradictory entry brackets.
 * **Execution Simulation (Milestone 3)**: Deterministic order matching, fill price determination, slippage and commission accounting, risk-based position sizing, attached stop-loss/take-profit protection, and intrabar ambiguity resolution.
+* **Performance Metrics (Milestone 4)**: Read-only summary derived from the engine result — win/loss/breakeven counts, win rate, expectancy, profit factor, averages, average bars held, and maximum currency/percentage drawdown. Auditable trade logs, equity curves, and the drawdown baseline come from the Milestone 3 execution records.
 
 ### Partially Implemented
 * **User Interface (Milestone 6)**: An initial Streamlit chart-data-to-backtest workflow (see Section 4). The full interactive audit dashboard is not yet complete.
 
+### Working Tree (Not Yet Committed)
+* **Per-Bar Drawdown Series (Milestone 5)**: A read-only, library-only per-bar drawdown path derived from the equity curve using the Milestone 4 drawdown conventions.
+
 ### Deferred to Future Milestones (Not Available Yet)
-* **Trade Ledger & Performance Metrics (Milestones 4 & 5)**: Auditable trade logs, equity curves, drawdown series, and $R$-multiple target reachability calculations.
+* **R-Multiple & Excursion Analytics**: $R$-multiple target reachability, MFE/MAE, Sharpe, annualization, and exposure remain deferred (they require Milestone 3 record extensions).
 
 ---
 

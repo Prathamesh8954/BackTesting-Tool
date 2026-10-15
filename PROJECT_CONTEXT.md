@@ -15,21 +15,21 @@ Python `>=3.12`. Dependencies (do not add others without asking): pandas, pyarro
 | Milestone | Status | Notes |
 |---|---|---|
 | 1 Data loader + validator | Complete (committed) | `src/data_loader.py`, `src/data_validator.py` |
-| 2 Strategy interface | Complete in **working tree**, not committed | `src/strategy/`, `tests/test_strategy/` |
-| 3 Execution engine | Complete in **working tree**, not committed | `src/execution/`, `tests/test_execution/` |
-| 4 Metrics layer | Implemented in **working tree**, not committed | `src/metrics/`, `tests/test_metrics/`; read-only, derived from M3 records |
-| 5 Extended ledger | Deferred | M3 `Trade`/`Fill`/`EquityPoint` records already form the ledger |
-| 6 Streamlit UI | Initial workflow implemented in **working tree** (user-authorized) | `app.py`, `src/ui/`, `tests/test_ui/` |
+| 2 Strategy interface | Complete (committed at `7ad7715`) | `src/strategy/`, `tests/test_strategy/` |
+| 3 Execution engine | Complete (committed at `7ad7715`) | `src/execution/`, `tests/test_execution/` |
+| 4 Metrics layer | Complete (committed at `ef2cb46`) | `src/metrics/`, `tests/test_metrics/`; read-only, derived from M3 records |
+| 5 Drawdown series | Implemented in **working tree**, not committed | `src/metrics/drawdown.py`; read-only per-bar drawdown series, library-only |
+| 6 Streamlit UI | Initial workflow complete (committed at `7ad7715`, user-authorized) | `app.py`, `src/ui/`, `tests/test_ui/` |
 
 README is user-facing and `PROJECT_CONTEXT.md` is implementation memory; README was updated for M3/M6 under prior user authorization (M3 marked complete; M6 described as an initial workflow).
 
 ## Git (do not stage or commit unless asked)
 
-- Branch: `master` at `7ad7715` (“feat: strategy interface, execution engine, and Streamlit UI (M2/M3/M6)”). M2/M3/M6 were committed from `c46e62b`; the M1 commit `c46e62b` is intact.
-- Uncommitted: M4 metrics layer — `src/metrics/`, `tests/test_metrics/`, plus this `PROJECT_CONTEXT.md` update.
-- Preserve all committed work and the uncommitted M4 layer. Do not rewrite loader/validator behavior, existing strategy models, or M3 execution without an identified need and approval.
+- Branch: `master`. History: `ef2cb46` (M4 metrics) → `7ad7715` (M2/M3/M6) → `c46e62b` (M1, intact).
+- Uncommitted: M5 drawdown series — `src/metrics/drawdown.py`, `src/metrics/__init__.py`, `tests/test_metrics/test_report_drawdown_series.py`, plus this `PROJECT_CONTEXT.md` and `README.md` documentation update.
+- Preserve all committed work and the uncommitted M5 additions. Do not rewrite loader/validator behavior, existing strategy models, M3 execution, or the committed M4 metrics without an identified need and approval.
 
-Baseline tests: `.\.venv\Scripts\python.exe -m pytest tests -q` → **185 passed** (150 pre-M4 + 35 M4 metrics). (Verified by running the full suite during the M4 implementation pass.)
+Baseline tests: `.\.venv\Scripts\python.exe -m pytest tests -q` → **204 passed** (185 at M4 + 19 M5 drawdown-series tests). (Verified by running the full suite during the M5 implementation pass.)
 
 ## Data contracts (M1)
 
@@ -138,7 +138,7 @@ User-approved. This resolves the open sizing/precision question; it supersedes t
 4. **Numerically safe arithmetic:** use floating-point-safe arithmetic so representation error cannot produce an invalid lot multiple or a false zero.
 5. **Cash constraint unchanged:** preserve the existing rule — **reject the entire entry** if the resulting quantity is unaffordable; never silently downsize to fit available cash.
 
-**Status:** Orientation rules 1–3, 5, 6, and 7 above are approved and recorded as written. **Rule 4 (take-profit modification) was amended by explicit user decision** (see rule 4): take-profit modifications are validated against the **entry fill price**, while stop-loss modifications remain validated against the **current market mark**. All rule-level orientation questions are resolved and none remain open. The M3 engine is **implemented in the working tree** (`src/execution/`, not committed), and the Rule 4 amendment **is reflected in code and covered by tests**.
+**Status:** Orientation rules 1–3, 5, 6, and 7 above are approved and recorded as written. **Rule 4 (take-profit modification) was amended by explicit user decision** (see rule 4): take-profit modifications are validated against the **entry fill price**, while stop-loss modifications remain validated against the **current market mark**. All rule-level orientation questions are resolved and none remain open. The M3 engine is **implemented** (`src/execution/`, committed at `7ad7715`), and the Rule 4 amendment **is reflected in code and covered by tests**.
 
 ## Milestone 4 — implemented metrics contract
 
@@ -160,9 +160,21 @@ Approved policies (do not re-open; these restate the approved M4 decisions):
 
 Out of scope, explicitly deferred: R-multiple counts (require M3 to retain the entry stop/risk level) and target-reachability analytics (require post-entry excursion / MFE-MAE data); also MFE/MAE, Sharpe, annualization, risk-free inputs, and exposure. No UI integration in this milestone.
 
+## Milestone 5 — implemented scope (per-bar drawdown series)
+
+Approved as a minimal, additive, read-only extension of the M4 metrics library. It does not touch M3 records or behavior, the M4 outputs, or the UI.
+
+- Public API: `src.metrics.compute_drawdown_series(equity_points, initial_capital) -> DrawdownSeries`, plus the frozen dataclasses `DrawdownPoint` (`bar_index`, `equity`, `peak`, `peak_bar_index`, `decline_currency`, `decline_pct`) and `DrawdownSeries` (immutable tuple `points`).
+- Same conventions as the M4 `compute_drawdown`: the running peak starts at `initial_capital` and updates when `equity >= peak` (the latest bar wins ties); `decline_currency = peak - equity`; `decline_pct = decline_currency / peak * 100` when `peak > 0`, otherwise `0.0` (values in percentage points). Input order and bar indices are preserved; an empty input yields an empty series; the input is never mutated.
+- Parity is enforced by tests: the series' maximum currency/percentage declines and their peak/trough bar indices match `compute_drawdown` on the engine fixture and on hand-built curves, including duplicate maximum-drawdown values (M4 keeps the first bar because it updates only on a strictly greater decline).
+
+Explicitly excluded (deferred): R-multiple counts, target reachability, MFE/MAE, Sharpe, annualization, risk-free inputs, and exposure. No UI integration, no `PerformanceReport` change, no new ledger abstraction/export, and no engine or model change.
+
+Auditable ledger: the documented "auditable trade logs" requirement is already satisfied by the M3 `Trade`/`Fill`/`Rejection`/`UnfilledOrder` records (deterministic, ordered, immutable) together with the M4 realized-P&L reconciliation; M5 adds no redundant ledger abstraction and no export feature.
+
 ## Current work and next actions
 
-Current: **M4 metrics layer implemented** in `src/metrics/` (see "Milestone 4 — implemented metrics contract"); it is read-only and derived from M3 records. **M3 engine implemented** in `src/execution/` (approved rules, defaults A–E, per-field protection-modification rejection; Rule 4 correction applied — take-profit modifications are validated against the entry fill price and stop-loss modifications against the current market mark). **M6 initial UI implemented** in `app.py` + `src/ui/`. The principal approved paths and the rule 4 amendment are covered by `tests/test_execution/`, the M4 contract by `tests/test_metrics/`, and the M6 workflow by `tests/test_ui/`; coverage is deliberately not exhaustive (remaining known gaps are noted under "Verification" below). Full suite: **185 passed**.
+Current: **M4 metrics layer implemented** in `src/metrics/` (see "Milestone 4 — implemented metrics contract"); it is read-only and derived from M3 records. **M3 engine implemented** in `src/execution/` (approved rules, defaults A–E, per-field protection-modification rejection; Rule 4 correction applied — take-profit modifications are validated against the entry fill price and stop-loss modifications against the current market mark). **M6 initial UI implemented** in `app.py` + `src/ui/`. The principal approved paths and the rule 4 amendment are covered by `tests/test_execution/`, the M4 contract and the M5 drawdown series by `tests/test_metrics/`, and the M6 workflow by `tests/test_ui/`; coverage is deliberately not exhaustive (remaining known gaps are noted under "Verification" below). Full suite: **204 passed**.
 
 Engine API: `run_backtest(strategy, df, EngineConfig(initial_capital, risk_fraction XOR risk_absolute, quantity_step, commission_per_fill, slippage_fraction)) -> BacktestResult`. `strategy.on_start()` runs before the loop and `on_finish()` after it. A structural validation failure raises `StrategyValidationError` and aborts the run; state-incompatible decisions are recorded and the run continues.
 
@@ -173,11 +185,11 @@ Implementation interpretations recorded (these restate the approved rules, they 
 - **Entry-candle protection scope (approved convention, F1):** protection is evaluated against the **full entry candle** for both market and limit entries. OHLC bars cannot distinguish movement before vs. after a limit fill within the same candle, so a limit entry's stop or target may be triggered by a price the candle reached before the fill. This is the approved, deterministic convention (rule 7 read as "the entry candle as a whole"); see `test_limit_entry_protection_uses_full_entry_candle_range`.
 - **P&L convention (approved, F3):** `BacktestResult.unrealized_pnl` is **gross** — `qty * (close - entry)` long, `qty * (entry - close)` short — and does not deduct the open position's entry commission, whereas equity-based `total_pnl` / `final_equity` already reflect commissions actually charged at execution. Therefore `realized_pnl + unrealized_pnl` can differ from `total_pnl` by the open trade's entry commission; this is intended, not a defect.
 
-Remaining / deferred: M4 metrics layer has been implemented (read-only, derived from M3 records; see above). M5 extended ledger remains deferred. The UI is a single-page Streamlit workflow; README was updated for M3/M6 under prior user authorization.
+Remaining / deferred: M4 metrics layer is committed (`ef2cb46`); the M5 per-bar drawdown series is implemented in the working tree (see above). R-multiple counts, target reachability, MFE/MAE, Sharpe, annualization, and exposure remain deferred. The UI is a single-page Streamlit workflow; README was updated for M3/M6 under prior user authorization.
 
 Running the UI: from the repository root, `.\.venv\Scripts\python.exe -m streamlit run app.py` (or `streamlit run app.py`). Place datasets in `data/raw/` or upload them in the app.
 
-Verification: `.\.venv\Scripts\python.exe -m pytest tests -q` → **185 passed** (150 original + 35 M4 metrics). The expanded M3 suite adds symmetric (short) coverage for rules 1, 3, 5, and 6; short stop-loss modifications (rule 2); limit-entry entry-candle protection (rule 7, F1); short SL-before-TP (rule 9) and short take-profit gap fills (rule 10); final-candle and working-exit expiry (rule 13); and closed short / SL / TP realized P&L with commission (rule 14). The M4 metrics suite covers counts/win-rate denominator, breakeven/undefined-ratio cases, profit-factor edges, averages (signed losing average), expectancy, bars-held (including same-bar), drawdown (initial-capital baseline; independent currency and percentage drawdowns; empty/single/flat/monotonic/peak-to-trough), open-position summary and F3 reconciliation (gross unrealized P&L; no synthetic exit), determinism and input immutability, and the invariants. Remaining known gaps (not blocked, intentionally left): the reverse per-field modification combination (stop applied while the take-profit is rejected in the same decision) and multiple `MODIFY_PROTECTION` decisions in one bar. The R-multiple counts and target-reachability analytics are explicitly out of scope for M4 (require M3 record extensions and post-entry excursion data).
+Verification: `.\.venv\Scripts\python.exe -m pytest tests -q` → **204 passed** (150 original + 35 M4 metrics + 19 M5 drawdown-series tests). The expanded M3 suite adds symmetric (short) coverage for rules 1, 3, 5, and 6; short stop-loss modifications (rule 2); limit-entry entry-candle protection (rule 7, F1); short SL-before-TP (rule 9) and short take-profit gap fills (rule 10); final-candle and working-exit expiry (rule 13); and closed short / SL / TP realized P&L with commission (rule 14). The M4 metrics suite covers counts/win-rate denominator, breakeven/undefined-ratio cases, profit-factor edges, averages (signed losing average), expectancy, bars-held (including same-bar), drawdown (initial-capital baseline; independent currency and percentage drawdowns; empty/single/flat/monotonic/peak-to-trough), open-position summary and F3 reconciliation (gross unrealized P&L; no synthetic exit), determinism and input immutability, and the invariants. Remaining known gaps (not blocked, intentionally left): the reverse per-field modification combination (stop applied while the take-profit is rejected in the same decision) and multiple `MODIFY_PROTECTION` decisions in one bar. The R-multiple counts and target-reachability analytics are explicitly out of scope for M4 (require M3 record extensions and post-entry excursion data). The M5 suite covers the per-bar drawdown series: exact hand-calculated per-bar values, the initial-capital baseline, latest-peak tie-breaking, empty/single/flat/monotonic curves, non-positive running peaks, determinism, frozen dataclasses, input immutability, and M4 parity (maximum currency/percentage values and first-occurrence trough/peak indices, including duplicate maximum-drawdown values).
 
 ## Constraints
 
@@ -191,9 +203,9 @@ Verification: `.\.venv\Scripts\python.exe -m pytest tests -q` → **185 passed**
 
 ## Known limitations
 
-- M2/M3/M6 are uncommitted; a clean checkout of `master` has the data layer only.
+- M5 is uncommitted; a clean checkout of `master` is at `ef2cb46` (Milestones 1–4 committed, plus the M6 UI).
 - `StrategyDecision` / `PositionView` have no quantity; sizing is engine-side (risk-based at fill). Quantity precision is a configured positive step, rounded down (see the approved precision rule).
 - `AccountView` does not expose realized/unrealized P&L.
 - Lookahead protection is not hostile-code isolation; the UI executes user-supplied strategy code in-process (`exec`) by design.
-- Performance metrics are minimal (accounting summary + equity curve); the full trade ledger/metrics milestones are deferred.
+- Performance metrics (M4) and the per-bar drawdown series (M5) are implemented; the extended ledger and the R-multiple/target-reachability analytics remain deferred.
 - The UI assumes the strategy source defines exactly one `Strategy` subclass (or a module-level `strategy` instance), and reads files from `data/raw/` or an uploaded file.
