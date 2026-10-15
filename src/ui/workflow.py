@@ -7,6 +7,7 @@ and the Milestone 3 engine; they never re-implement data import.
 
 from __future__ import annotations
 
+import math
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,7 +17,7 @@ import pandas as pd
 
 from src.data_loader import load_market_data
 from src.data_validator import IssueDetail, ValidationReport, validate_market_data
-from src.execution.models import BacktestResult
+from src.execution.models import BacktestResult, Fill, FillKind, Trade
 from src.metrics import compute_drawdown_series, compute_metrics
 from src.strategy.base import Strategy
 from src.strategy.context import StrategyContext
@@ -57,6 +58,230 @@ class MyStrategy(Strategy):
 
 class StrategyCodeError(ValueError):
     """Raised when user-supplied strategy code cannot be loaded."""
+
+
+class TradeFillLinkageError(ValueError):
+    """Raised when a result's fill stream cannot be linked to its trade records.
+
+    Distinguishes "linkage unavailable" (trades recorded without any fills, as
+    only synthetic fixtures can produce) from "linkage invalid" (a malformed,
+    out-of-order or self-inconsistent fill stream). Either way the helper fails
+    loudly instead of returning an association it cannot prove.
+    """
+
+
+# The M3 engine only ever closes a position with one of these three fills.
+_CLOSING_FILL_KINDS = (FillKind.EXIT, FillKind.STOP_LOSS, FillKind.TAKE_PROFIT)
+
+# Same tolerance convention as ``src.metrics.metrics`` consistency checks.
+_LINKAGE_REL_TOL = 1e-9
+_LINKAGE_ABS_TOL = 1e-9
+
+
+@dataclass(frozen=True)
+class LinkedTrade:
+    """A completed trade together with the two fills that produced it."""
+
+    index: int
+    trade: Trade
+    entry_fill: Fill
+    exit_fill: Fill
+
+
+def link_trade_fills(result: BacktestResult) -> tuple[LinkedTrade, ...]:
+    """Pairs every completed trade in ``result`` with its entry and closing fills.
+
+    Pure and read-only: ``result`` is inspected but never mutated, the strategy
+    is never rerun, and no fill or trade is ever synthesised. The same input
+    always yields the same output.
+
+    Linkage contract
+    ----------------
+    The M3 engine appends one ``ENTRY`` fill when it opens a position, and a
+    closing fill (``EXIT``, ``STOP_LOSS`` or ``TAKE_PROFIT``) *in the same call*
+    as the ``Trade`` that closes it (``ExecutionEngine._close_position``).
+    Rejected entries append no fill at all, and a position can only be closed
+    after it was opened, so the fill stream alternates strictly::
+
+        ENTRY, closing, ENTRY, closing, ...
+
+    Trade ``k`` therefore pairs positionally with ``fills[2k]`` (its entry) and
+    ``fills[2k + 1]`` (its close). A position left open at the end of the data
+    adds one trailing ``ENTRY`` fill with no matching trade.
+
+    Pairing is deliberately **not** keyed on timestamps (a same-bar round trip
+    reuses one timestamp for both fills) or on tags (a manual ``EXIT`` may carry
+    an exit tag that differs from the entry tag that ``Trade.tag`` records).
+
+    Every pair is validated against its trade before being returned: kinds,
+    direction, quantity, prices, bar indices, timestamps, commissions, tag
+    semantics, and the gross/net P&L conventions used by the engine. Anything
+    that cannot be proven raises :class:`TradeFillLinkageError`.
+
+    Parameters
+    ----------
+    result:
+        The :class:`~src.execution.models.BacktestResult` to inspect.
+
+    Returns
+    -------
+    tuple of :class:`LinkedTrade`
+        One entry per completed trade, in trade order. The trailing entry fill
+        of an open position is validated but not returned, because it has no
+        completed trade to pair with.
+
+    Raises
+    ------
+    TradeFillLinkageError
+        If trades are recorded without fills (linkage unavailable), if the fill
+        stream is missing, extra or out of order, or if any field of a pair
+        disagrees with its trade.
+    """
+    fills = tuple(result.fills)
+    trades = tuple(result.trades)
+
+    # A position left open at the end of the data accounts for one extra,
+    # unmatched ENTRY fill; a flat result accounts for none.
+    expected_fills = 2 * len(trades) + (0 if result.is_flat else 1)
+    if len(fills) != expected_fills:
+        if trades and not fills:
+            raise TradeFillLinkageError(
+                f"Linkage unavailable: result records {len(trades)} completed "
+                "trade(s) but contains no fills, so trade-to-fill linkage cannot "
+                "be derived from trades alone."
+            )
+        trailing = "" if result.is_flat else " plus one trailing ENTRY fill for the open position"
+        raise TradeFillLinkageError(
+            f"Malformed fill stream: expected {expected_fills} fill(s) for "
+            f"{len(trades)} completed trade(s){trailing}, found {len(fills)}."
+        )
+
+    linked: list[LinkedTrade] = []
+    for index, trade in enumerate(trades):
+        entry_fill = fills[2 * index]
+        closing_fill = fills[2 * index + 1]
+
+        if entry_fill.kind != FillKind.ENTRY:
+            raise TradeFillLinkageError(
+                f"Out-of-order fill stream at index {2 * index}: an ENTRY fill "
+                f"is required to open trade {index}, found {_kind_name(entry_fill.kind)}."
+            )
+        if closing_fill.kind not in _CLOSING_FILL_KINDS:
+            raise TradeFillLinkageError(
+                f"Out-of-order fill stream at index {2 * index + 1}: a closing "
+                f"fill is required to close trade {index}, found "
+                f"{_kind_name(closing_fill.kind)}."
+            )
+
+        _validate_pair(index, trade, entry_fill, closing_fill)
+        linked.append(
+            LinkedTrade(
+                index=index,
+                trade=trade,
+                entry_fill=entry_fill,
+                exit_fill=closing_fill,
+            )
+        )
+
+    if not result.is_flat and fills and fills[-1].kind != FillKind.ENTRY:
+        raise TradeFillLinkageError(
+            "Out-of-order fill stream: the unmatched trailing fill of an open "
+            f"position must be an ENTRY, found {_kind_name(fills[-1].kind)}."
+        )
+
+    return tuple(linked)
+
+
+def _kind_name(kind: object) -> str:
+    """Returns the value of a ``FillKind`` (or ``str`` of it) for messages."""
+    value = getattr(kind, "value", None)
+    return str(value) if value is not None else str(kind)
+
+
+def _values_close(left: object, right: object) -> bool:
+    """Numeric comparison that reports ``False`` instead of raising on bad input."""
+    if not isinstance(left, (int, float)) or not isinstance(right, (int, float)):
+        return False
+    return math.isclose(
+        left, right, rel_tol=_LINKAGE_REL_TOL, abs_tol=_LINKAGE_ABS_TOL
+    )
+
+
+def _record_mismatch(
+    index: int,
+    field: str,
+    trade_value: object,
+    fill_value: object,
+) -> TradeFillLinkageError:
+    """Builds the error raised when a trade field disagrees with a fill."""
+    return TradeFillLinkageError(
+        f"Trade {index} does not match its paired fills: {field} differs "
+        f"(trade={trade_value!r}, fill={fill_value!r})."
+    )
+
+
+def _accounting_mismatch(
+    index: int,
+    field: str,
+    trade_value: float,
+    recomputed: float,
+) -> TradeFillLinkageError:
+    """Builds the error raised when a trade's P&L contradicts its own fields."""
+    return TradeFillLinkageError(
+        f"Trade {index} accounting is inconsistent: {field} differs "
+        f"(trade={trade_value!r}, recomputed={recomputed!r})."
+    )
+
+
+def _validate_pair(index: int, trade: Trade, entry_fill: Fill, closing_fill: Fill) -> None:
+    """Checks one ``(entry fill, closing fill)`` pair against its trade record.
+
+    Raises :class:`TradeFillLinkageError` on the first disagreement.
+    """
+    # --- non-identity fields -----------------------------------------------
+    for field, trade_value, fill_value in (
+        ("entry kind", trade.entry_kind, entry_fill.kind),
+        ("exit kind", trade.exit_kind, closing_fill.kind),
+        ("entry direction", trade.direction, entry_fill.direction),
+        ("exit direction", trade.direction, closing_fill.direction),
+        ("entry bar index", trade.entry_bar_index, entry_fill.bar_index),
+        ("exit bar index", trade.exit_bar_index, closing_fill.bar_index),
+        ("entry timestamp", trade.entry_timestamp, entry_fill.timestamp),
+        ("exit timestamp", trade.exit_timestamp, closing_fill.timestamp),
+        ("entry tag", trade.tag, entry_fill.tag),
+    ):
+        if trade_value != fill_value:
+            raise _record_mismatch(index, field, trade_value, fill_value)
+
+    # A stop-loss/take-profit close inherits the position tag, so it must agree.
+    # A manual EXIT decision may carry its own tag, so its fill tag is
+    # informational only and is never used to join records.
+    if closing_fill.kind != FillKind.EXIT and trade.tag != closing_fill.tag:
+        raise _record_mismatch(index, "exit tag", trade.tag, closing_fill.tag)
+
+    # --- float identity fields ---------------------------------------------
+    for field, trade_value, fill_value in (
+        ("entry quantity", trade.quantity, entry_fill.quantity),
+        ("exit quantity", trade.quantity, closing_fill.quantity),
+        ("entry price", trade.entry_price, entry_fill.price),
+        ("exit price", trade.exit_price, closing_fill.price),
+        ("entry commission", trade.entry_commission, entry_fill.commission),
+        ("exit commission", trade.exit_commission, closing_fill.commission),
+    ):
+        if not _values_close(trade_value, fill_value):
+            raise _record_mismatch(index, field, trade_value, fill_value)
+
+    # --- accounting conventions (mirrors ExecutionEngine._close_position) ----
+    if trade.direction == "LONG":
+        gross = trade.quantity * (trade.exit_price - trade.entry_price)
+    else:
+        gross = trade.quantity * (trade.entry_price - trade.exit_price)
+    net = gross - trade.entry_commission - trade.exit_commission
+
+    if not _values_close(trade.gross_pnl, gross):
+        raise _accounting_mismatch(index, "gross P&L", trade.gross_pnl, gross)
+    if not _values_close(trade.net_pnl, net):
+        raise _accounting_mismatch(index, "net P&L", trade.net_pnl, net)
 
 
 @dataclass
