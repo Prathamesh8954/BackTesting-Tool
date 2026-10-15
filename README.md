@@ -12,8 +12,9 @@ The architecture enforces a strict separation between data ingestion, strategy l
 * **Milestone 2 (Complete)**: Universal, strategy-independent interface (`Strategy`), simulation context with lookahead protection (`StrategyContext`), immutable decision model (`StrategyDecision`), and structural request validation (`validate_decision`).
 * **Milestone 3 (Complete)**: Order execution simulation engine — fill pricing, transaction costs (slippage/commissions), risk-based position sizing, and intrabar ambiguity resolution.
 * **Milestone 4 (Complete)**: Read-only performance metrics derived from the engine result — win/loss/breakeven counts, win rate, expectancy, profit factor, averages, average bars held, and maximum currency/percentage drawdown. Trade logs, equity curves, and the drawdown baseline come from the Milestone 3 execution records.
-* **Milestone 5 (Working tree, not yet committed)**: A read-only, library-only per-bar drawdown series built on the Milestone 4 drawdown conventions.
-* **Milestone 6 (Initial workflow)**: An initial Streamlit chart-data-to-backtest front-end (`app.py`). The full UI and the remaining planned milestones are not yet complete.
+* **Milestone 5 (Complete)**: A read-only, library-only per-bar drawdown series built on the Milestone 4 drawdown conventions.
+* **Milestone 6 (Initial workflow; scope pending review)**: An initial Streamlit chart-data-to-backtest front-end (`app.py`). The full UI and the remaining planned milestones are not yet complete.
+* **Milestone 7 (Complete)**: A read-only Streamlit metrics & drawdown dashboard built on the Milestone 4 performance metrics and the Milestone 5 per-bar drawdown series — a performance-metrics panel and a per-bar percentage drawdown chart in the results view.
 
 ---
 
@@ -160,7 +161,7 @@ The workflow guides you through:
 2. **Validate** the data, with clear messages for missing columns, invalid values, or other failures.
 3. **Review** the loaded data state (source, number of rows, available time range, and columns).
 4. **Configure** the backtest (initial capital, risk model, quantity step, commission, and slippage).
-5. **Run** the strategy and inspect the results, including the accounting summary, equity curve, trades, fills, and rejected decisions.
+5. **Run** the strategy and inspect the results, including the accounting summary, the performance metrics panel, the equity curve, the per-bar drawdown chart, trades, fills, and rejected decisions.
 
 > Note: This is an initial workflow. The full interactive dashboard and the remaining planned milestones are not yet complete.
 
@@ -168,7 +169,7 @@ The workflow guides you through:
 
 ## 5. Current vs. Future Milestone Capabilities
 
-### Currently Implemented (Milestones 1, 2, 3 & 4)
+### Currently Implemented (Milestones 1, 2, 3, 4, 5 & 7)
 * **Read-Only Ingestion**: CSV and Parquet files loaded without modifying disk files.
 * **Non-Mutating Validation**: Comprehensive OHLC invariant checks, non-numeric checks, and separation of fatal errors from warnings.
 * **Strategy Interface**: Universal `Strategy.on_bar(context)` lifecycle supporting stateful strategies.
@@ -176,12 +177,11 @@ The workflow guides you through:
 * **Structural Decision Validation**: `validate_decision()` rejects non-finite prices, incompatible order types, and contradictory entry brackets.
 * **Execution Simulation (Milestone 3)**: Deterministic order matching, fill price determination, slippage and commission accounting, risk-based position sizing, attached stop-loss/take-profit protection, and intrabar ambiguity resolution.
 * **Performance Metrics (Milestone 4)**: Read-only summary derived from the engine result — win/loss/breakeven counts, win rate, expectancy, profit factor, averages, average bars held, and maximum currency/percentage drawdown. Auditable trade logs, equity curves, and the drawdown baseline come from the Milestone 3 execution records.
+* **Per-Bar Drawdown Series (Milestone 5)**: A read-only, library-only per-bar drawdown path derived from the equity curve using the Milestone 4 drawdown conventions.
+* **Metrics & Drawdown Dashboard (Milestone 7)**: The Streamlit results view surfaces the Milestone 4 performance metrics in a dedicated panel and charts the Milestone 5 per-bar percentage drawdown beneath the equity curve. Undefined metrics are shown as `n/a`.
 
 ### Partially Implemented
-* **User Interface (Milestone 6)**: An initial Streamlit chart-data-to-backtest workflow (see Section 4). The full interactive audit dashboard is not yet complete.
-
-### Working Tree (Not Yet Committed)
-* **Per-Bar Drawdown Series (Milestone 5)**: A read-only, library-only per-bar drawdown path derived from the equity curve using the Milestone 4 drawdown conventions.
+* **User Interface (Milestone 6)**: An initial Streamlit chart-data-to-backtest workflow (see Section 4). Its remaining scope has not yet been reviewed; the full interactive audit dashboard is not complete.
 
 ### Deferred to Future Milestones (Not Available Yet)
 * **R-Multiple & Excursion Analytics**: $R$-multiple target reachability, MFE/MAE, Sharpe, annualization, and exposure remain deferred (they require Milestone 3 record extensions).
