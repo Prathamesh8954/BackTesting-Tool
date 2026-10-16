@@ -637,3 +637,51 @@ def test_audit_helpers_are_read_only_deterministic_and_never_rerun():
     # Deterministic: equal output on repeated calls.
     pd.testing.assert_frame_equal(audit_first, audit_second)
     pd.testing.assert_frame_equal(fills_first, fills_second)
+
+
+# -------------------------------------------- R-multiple display (M13 integration)
+# The per-trade R-multiple and the panel's Mean R / counts come straight from the
+# pure M13 helper in ``src.metrics.r_multiple``; these tests assert the wiring and
+# that undefined values render as n/a / None rather than a substituted zero.
+
+
+def test_trades_to_dataframe_includes_r_multiple_column():
+    """Each completed trade row exposes its M13 R-multiple.
+
+    ``three_trade_result`` has R-multiples [1.0, -2.0, -1.0] (see
+    ``tests/test_metrics/test_r_multiple.py``).
+    """
+    trades = workflow.trades_to_dataframe(three_trade_result())
+
+    assert "r_multiple" in trades.columns
+    assert list(trades["r_multiple"]) == [1.0, -2.0, -1.0]
+
+
+def test_trades_to_dataframe_r_multiple_is_undefined_without_initial_stop():
+    """A trade with no recorded initial stop yields an undefined R, never 0."""
+    result = make_result([make_trade(100.0)])  # make_trade's default initial_stop is None
+
+    trades = workflow.trades_to_dataframe(result)
+
+    assert "r_multiple" in trades.columns
+    assert trades["r_multiple"].isna().all()
+
+
+def test_performance_summary_includes_r_multiple_rows():
+    """Mean R and the computable/non-computable counts come from the M13 helper."""
+    summary = dict(workflow.performance_summary(three_trade_result()))
+
+    # (1.0 + -2.0 + -1.0) / 3, formatted to two decimals by _format_ratio.
+    assert summary["Mean R"] == "-0.67"
+    assert summary["R-multiple computable trades"] == "3"
+    assert summary["R-multiple non-computable trades"] == "0"
+
+
+def test_performance_summary_renders_undefined_mean_r_as_na():
+    """With no computable trade the mean R is 'n/a', never '0.00'."""
+    summary = dict(workflow.performance_summary(do_nothing_result()))
+
+    assert summary["Mean R"] == "n/a"
+    assert summary["Mean R"] != "0.00"
+    assert summary["R-multiple computable trades"] == "0"
+    assert summary["R-multiple non-computable trades"] == "0"

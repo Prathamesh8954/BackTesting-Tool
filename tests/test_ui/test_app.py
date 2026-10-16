@@ -245,3 +245,22 @@ def test_app_marks_open_position_entry_and_creates_no_trade_row(demo_raw_dir):
     # blanket restriction on every rendered table's column names.
     assert not any("entry_bar" in frame.columns for frame in frames)
     assert not any("exit_fill_kind" in frame.columns for frame in frames)
+
+
+def test_app_renders_r_multiple_panel_and_trades_column(demo_raw_dir):
+    """M13 integration: 'Mean R' rows render and the Trades table carries r_multiple."""
+    at = _run_demo(streamlit_testing.AppTest.from_file(APP_PATH, default_timeout=30).run())
+
+    assert not at.exception
+    assert not at.error
+
+    labels = [metric.label for metric in at.metric]
+    for expected in (
+        "Mean R",
+        "R-multiple computable trades",
+        "R-multiple non-computable trades",
+    ):
+        assert expected in labels, expected
+
+    frames = [frame.value for frame in at.dataframe if isinstance(frame.value, pd.DataFrame)]
+    assert any("r_multiple" in frame.columns for frame in frames)

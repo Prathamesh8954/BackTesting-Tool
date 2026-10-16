@@ -18,7 +18,12 @@ import pandas as pd
 from src.data_loader import load_market_data
 from src.data_validator import IssueDetail, ValidationReport, validate_market_data
 from src.execution.models import BacktestResult, Fill, FillKind, Trade
-from src.metrics import compute_drawdown_series, compute_metrics
+from src.metrics import (
+    compute_drawdown_series,
+    compute_metrics,
+    compute_r_multiple_summary,
+    trade_r_multiple,
+)
 from src.strategy.base import Strategy
 from src.strategy.context import StrategyContext
 from src.strategy.models import OrderAction, OrderType, StrategyDecision
@@ -527,6 +532,7 @@ def trades_to_dataframe(result: BacktestResult) -> pd.DataFrame:
                 "exit_kind": trade.exit_kind.value,
                 "gross_pnl": trade.gross_pnl,
                 "net_pnl": trade.net_pnl,
+                "r_multiple": trade_r_multiple(trade),
                 "entry_commission": trade.entry_commission,
                 "exit_commission": trade.exit_commission,
             }
@@ -698,15 +704,18 @@ def _format_bar_index(value: Optional[int]) -> str:
 def performance_summary(result: BacktestResult) -> list[tuple[str, str]]:
     """Ordered (label, value) rows for the Milestone 7 performance panel.
 
-    Read-only: every figure is taken from the Milestone 4 ``compute_metrics``
+    Read-only: the Milestone 4/7 figures are taken from the ``compute_metrics``
     report and merely formatted here, so the panel can never disagree with the
-    metrics library. Undefined metrics (``None``, e.g. a win rate with no
-    closed trades) render as ``"n/a"`` and are never replaced with zero.
+    metrics library; the R-multiple rows come from the Milestone 13 helper
+    (``compute_r_multiple_summary``) and are likewise only formatted. Undefined
+    metrics (``None``, e.g. a win rate with no closed trades, or a mean R with no
+    computable trade) render as ``"n/a"`` and are never replaced with zero.
 
     ``MetricsConsistencyError`` is deliberately **not** caught here: it
     propagates so the caller can show the failure instead of hiding the panel.
     """
     report = compute_metrics(result)
+    r_summary = compute_r_multiple_summary(result.trades)
     rows: list[tuple[str, str]] = [
         # Closed-trade statistics (M4)
         ("Closed trades", str(report.closed_trade_count)),
@@ -743,6 +752,12 @@ def performance_summary(result: BacktestResult) -> list[tuple[str, str]]:
         # Informational open-position summary (M4/F3: unrealized P&L stays gross)
         ("Open position", "None" if report.open_position is None else f"{report.open_position.direction} x{report.open_position.quantity:g}"),
         ("Reconciliation difference", _format_money(report.reconciliation_difference)),
+        # R-multiple analytics (M13). Derived from the immutable Trade records by
+        # the pure M13 helper; never re-derived here, and an undefined mean stays
+        # "n/a" (it is never replaced with zero).
+        ("Mean R", _format_ratio(r_summary.mean_r)),
+        ("R-multiple computable trades", str(r_summary.computable_count)),
+        ("R-multiple non-computable trades", str(r_summary.non_computable_count)),
     ]
     if report.open_position is not None:
         position = report.open_position
