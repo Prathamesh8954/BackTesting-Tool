@@ -17,6 +17,11 @@ from src.metrics.metrics import (
     PerformanceReport,
     compute_metrics,
 )
+from src.metrics.r_multiple import (
+    RMultipleSummary,
+    compute_r_multiple_summary,
+    trade_r_multiple,
+)
 
 __all__ = [
     "DrawdownPoint",
@@ -25,7 +30,10 @@ __all__ = [
     "MetricsConsistencyError",
     "OpenPositionSummary",
     "PerformanceReport",
+    "RMultipleSummary",
     "compute_drawdown",
     "compute_drawdown_series",
     "compute_metrics",
+    "compute_r_multiple_summary",
+    "trade_r_multiple",
 ]

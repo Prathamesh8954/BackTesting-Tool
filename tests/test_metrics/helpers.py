@@ -30,6 +30,7 @@ def make_trade(
     entry_commission: float = 0.0,
     exit_commission: float = 0.0,
     tag: str = "",
+    initial_stop: Optional[float] = None,
 ) -> Trade:
     """Builds a :class:`Trade`. ``net_pnl`` defaults to ``gross - commissions``."""
     if gross_pnl is None:
@@ -50,6 +51,7 @@ def make_trade(
         gross_pnl=gross_pnl,
         net_pnl=net_pnl,
         tag=tag,
+        initial_stop=initial_stop,
     )
 
 

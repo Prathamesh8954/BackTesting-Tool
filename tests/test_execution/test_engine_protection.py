@@ -511,3 +511,132 @@ def test_short_take_profit_gap_fills_at_better_open():
     assert exit_fill.kind.value == "TAKE_PROFIT"
     assert exit_fill.price == 85.0  # open is better than the target
 
+
+# --- Per-field modification combinations and multiple modifications: rules 8, 2, 4
+
+
+def test_modification_stop_applied_while_take_profit_rejected_same_decision():
+    # Reverse per-field combination (the complement of
+    # test_modification_is_per_field_stop_rejected_take_profit_applied): a single
+    # MODIFY_PROTECTION carries a valid stop (correct side of the request-candle
+    # mark 103) and an invalid take-profit (below the entry fill 100). Rule 8 keeps
+    # the two fields independent, so the stop is staged (rule 2) while only the
+    # take-profit is rejected (rule 4, amended); the prior take-profit is retained.
+    df = make_df([
+        (100.0, 103.0, 99.0, 102.0),
+        (100.0, 105.0, 96.0, 103.0),   # entry long 100, close 103 (the mark)
+        (101.0, 104.0, 100.0, 103.0),  # staged stop 102 active -> low 100 <= 102
+    ])
+    script = {
+        0: [StrategyDecision(action=OrderAction.ENTER_LONG, stop_loss=90.0, take_profit=130.0)],
+        1: [StrategyDecision(action=OrderAction.MODIFY_PROTECTION, stop_loss=102.0, take_profit=95.0)],
+    }
+    result = run_backtest(ScriptedStrategy(script), df, _config())
+
+    assert "WRONG_SIDE_TAKE_PROFIT_MODIFICATION" in _reasons(result)
+    assert "WRONG_SIDE_STOP_LOSS_MODIFICATION" not in _reasons(result)
+    exit_fill = result.fills[-1]
+    assert exit_fill.kind.value == "STOP_LOSS"
+    # min(open=101, staged stop=102); the prior stop 90 was never touched, so this
+    # exit proves the stop half of the rejected-take-profit decision was applied.
+    assert exit_fill.price == 101.0
+
+
+def test_short_modification_stop_applied_while_take_profit_rejected_same_decision():
+    # Short-side complement of the reverse per-field combination: the stop (98) is
+    # correct relative to the request-candle mark (97) and is staged, while the
+    # take-profit (105) is above the entry fill (100) and is rejected (rule 4).
+    df = make_df([
+        (100.0, 101.0, 98.0, 100.0),
+        (100.0, 101.0, 96.0, 97.0),    # short entry 100, close 97 (the mark)
+        (98.0, 99.0, 95.0, 96.0),      # staged stop 98 active -> high 99 >= 98
+    ])
+    script = {
+        0: [StrategyDecision(action=OrderAction.ENTER_SHORT, stop_loss=110.0, take_profit=90.0)],
+        1: [StrategyDecision(action=OrderAction.MODIFY_PROTECTION, stop_loss=98.0, take_profit=105.0)],
+    }
+    result = run_backtest(ScriptedStrategy(script), df, _config())
+
+    assert "WRONG_SIDE_TAKE_PROFIT_MODIFICATION" in _reasons(result)
+    assert "WRONG_SIDE_STOP_LOSS_MODIFICATION" not in _reasons(result)
+    exit_fill = result.fills[-1]
+    assert exit_fill.kind.value == "STOP_LOSS"
+    # max(open=98, staged stop=98); the prior stop 110 was never touched, so this
+    # exit proves the stop half of the rejected-take-profit decision was applied.
+    assert exit_fill.price == 98.0
+
+
+def test_multiple_modifications_in_one_bar_last_stop_wins():
+    # Multiple MODIFY_PROTECTION decisions in one bar apply in list order (the
+    # approved bar loop): for the stop field, the last valid write is the one that
+    # becomes eligible on the next candle.
+    df = make_df([
+        (100.0, 103.0, 99.0, 102.0),
+        (100.0, 105.0, 96.0, 103.0),   # entry 100, close 103 (the mark)
+        (101.0, 104.0, 100.0, 103.0),  # last staged stop 102 active -> low 100 <= 102
+    ])
+    script = {
+        0: [StrategyDecision(action=OrderAction.ENTER_LONG, stop_loss=90.0)],
+        1: [
+            StrategyDecision(action=OrderAction.MODIFY_PROTECTION, stop_loss=95.0),
+            StrategyDecision(action=OrderAction.MODIFY_PROTECTION, stop_loss=102.0),
+        ],
+    }
+    result = run_backtest(ScriptedStrategy(script), df, _config())
+
+    assert result.rejections == ()
+    exit_fill = result.fills[-1]
+    assert exit_fill.kind.value == "STOP_LOSS"
+    # min(open=101, 102); had the earlier 95 been effective, low 100 would not have
+    # touched it and no exit would have occurred here.
+    assert exit_fill.price == 101.0
+
+
+def test_multiple_modifications_in_one_bar_last_take_profit_wins():
+    # Same list-order rule for the take-profit field: the later valid modification
+    # supersedes the earlier one when both are staged in the same bar.
+    df = make_df([
+        (100.0, 103.0, 99.0, 102.0),
+        (100.0, 105.0, 96.0, 103.0),   # entry 100, close 103 (the mark)
+        (102.0, 115.0, 99.0, 112.0),   # last staged tp 110 active -> high 115 >= 110
+    ])
+    script = {
+        0: [StrategyDecision(action=OrderAction.ENTER_LONG, stop_loss=90.0, take_profit=130.0)],
+        1: [
+            StrategyDecision(action=OrderAction.MODIFY_PROTECTION, take_profit=140.0),
+            StrategyDecision(action=OrderAction.MODIFY_PROTECTION, take_profit=110.0),
+        ],
+    }
+    result = run_backtest(ScriptedStrategy(script), df, _config())
+
+    assert result.rejections == ()
+    exit_fill = result.fills[-1]
+    assert exit_fill.kind.value == "TAKE_PROFIT"
+    # High 115 reaches 110 but not the superseded 140, so this exit proves the
+    # later take-profit was the effective one.
+    assert exit_fill.price == 110.0
+
+
+def test_multiple_modifications_in_one_bar_rejected_one_preserves_staged_value():
+    # Record-and-continue (rule 11) interacting with list order (approved bar loop):
+    # when a later MODIFY_PROTECTION in the same bar is rejected, an earlier valid
+    # staged level is retained rather than being clobbered or discarded.
+    df = make_df([
+        (100.0, 103.0, 99.0, 102.0),
+        (100.0, 105.0, 96.0, 103.0),   # entry 100, close 103 (the mark)
+        (100.0, 101.0, 94.0, 95.0),    # retained staged stop 95 -> low 94 <= 95
+    ])
+    script = {
+        0: [StrategyDecision(action=OrderAction.ENTER_LONG, stop_loss=90.0)],
+        1: [
+            StrategyDecision(action=OrderAction.MODIFY_PROTECTION, stop_loss=95.0),
+            StrategyDecision(action=OrderAction.MODIFY_PROTECTION, stop_loss=120.0),  # wrong side vs mark 103
+        ],
+    }
+    result = run_backtest(ScriptedStrategy(script), df, _config())
+
+    assert _reasons(result) == ["WRONG_SIDE_STOP_LOSS_MODIFICATION"]
+    exit_fill = result.fills[-1]
+    assert exit_fill.kind.value == "STOP_LOSS"
+    assert exit_fill.price == 95.0  # min(open=100, retained staged stop=95)
+

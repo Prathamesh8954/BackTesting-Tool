@@ -65,6 +65,7 @@ class Trade:
     gross_pnl: float
     net_pnl: float
     tag: str = ""
+    initial_stop: Optional[float] = None
 
 
 @dataclass(frozen=True)

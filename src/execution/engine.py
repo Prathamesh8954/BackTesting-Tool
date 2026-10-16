@@ -64,6 +64,7 @@ class _Position:
     stop_loss: Optional[float]
     take_profit: Optional[float]
     entry_commission: float
+    initial_stop: Optional[float]
     tag: str
 
 
@@ -281,6 +282,7 @@ class ExecutionEngine:
             stop_loss=order.stop_loss,
             take_profit=order.take_profit,
             entry_commission=commission,
+            initial_stop=order.stop_loss,
             tag=order.tag,
         )
         self._fills.append(
@@ -399,6 +401,7 @@ class ExecutionEngine:
                 gross_pnl=gross,
                 net_pnl=net,
                 tag=position.tag,
+                initial_stop=position.initial_stop,
             )
         )
 
