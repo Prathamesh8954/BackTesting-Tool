@@ -171,7 +171,7 @@ The workflow guides you through:
 
 ## 5. Current vs. Future Milestone Capabilities
 
-### Currently Implemented (Milestones 1, 2, 3, 4, 5, 7, 8, 9, 10 & 13)
+### Currently Implemented (Milestones 1, 2, 3, 4, 5, 7, 8, 9, 10, 13 & 25)
 * **Read-Only Ingestion**: CSV and Parquet files loaded without modifying disk files.
 * **Non-Mutating Validation**: Comprehensive OHLC invariant checks, non-numeric checks, and separation of fatal errors from warnings.
 * **Strategy Interface**: Universal `Strategy.on_bar(context)` lifecycle supporting stateful strategies.
@@ -184,13 +184,14 @@ The workflow guides you through:
 * **Validated Trade-to-Fill Linkage (Milestone 8)**: A pure, read-only helper pairs every completed trade with its entry and closing fills positionally (never by timestamp or tag) and validates the association field-by-field, raising an explicit error on any stream it cannot prove.
 * **Trade Audit Trail (Milestone 9)**: The Streamlit results view adds a read-only audit section between Trades and Fills that shows each completed trade with its validated entry and closing fill details, and annotates the existing fills table in place with a role column (`Trade <n> entry` / `Trade <n> close`, or an open-position entry label). A linkage failure is shown to the user while the remaining results sections still render.
 * **Execution-Engine Test Coverage (Milestone 10)**: Regression tests close the two documented Milestone 3 test gaps — the reverse per-field protection-modification combination (stop applied while the take-profit is rejected in the same decision) and multiple `MODIFY_PROTECTION` decisions in one bar. Test-only: no engine, accounting, or metric behaviour changed.
-* **R-Multiple Analytics (Milestone 13)**: A pure, read-only helper computes each completed trade's $R$-multiple as `R = net_pnl / (quantity * abs(entry_price - initial_stop))`, where the initial stop is captured at entry (before any later protection modification) and recorded on the trade as `Trade.initial_stop`. A companion summary reports the mean $R$ across computable trades plus the computable/non-computable counts. Undefined results are `None`, never `0`. Library-only: the performance report, the dashboard columns, and the audit-trail behaviour are unchanged.
+* **R-Multiple Analytics (Milestone 13)**: A pure, read-only helper computes each completed trade's $R$-multiple as `R = net_pnl / (quantity * abs(entry_price - initial_stop))`, where the initial stop is captured at entry (before any later protection modification) and recorded on the trade as `Trade.initial_stop`. A companion summary reports the mean $R$ across computable trades plus the computable/non-computable counts. Undefined results are `None`, never `0`. The metric is a library API; the Milestone 13 commit itself changed no performance report, dashboard column, or audit-trail behaviour.
+* **R-Multiple UI Integration (Milestone 25)**: The Streamlit results view surfaces the Milestone 13 metric read-only — an `r_multiple` column on the Trades table, and `Mean R` plus computable/non-computable counts in the performance-metrics panel, taken directly from the Milestone 13 helper. An undefined mean is rendered as `n/a`, never `0`; the performance report, the execution records, and the audit trail are unchanged.
 
 ### Partially Implemented
 * **User Interface (Milestone 6)**: An initial Streamlit chart-data-to-backtest workflow (see Section 4). Its broader scope has no defined specification (the trade audit-trail slice is covered by Milestones 8 and 9); completing the wider interactive audit dashboard requires a supervisor decision.
 
 ### Deferred to Future Milestones (Not Available Yet)
-* **Excursion Analytics**: $R$-multiple target reachability, MFE/MAE, Sharpe, annualization, and exposure remain deferred (they require Milestone 3 record extensions). Per-trade $R$-multiples and their mean/coverage summary are available library-only (Milestone 13).
+* **Excursion Analytics**: $R$-multiple target reachability, MFE/MAE, Sharpe, annualization, and exposure remain deferred (they require Milestone 3 record extensions). Per-trade $R$-multiples and their mean/coverage summary are available (library Milestone 13, surfaced read-only in the UI by Milestone 25).
 
 ---
 
@@ -202,4 +203,4 @@ Run the full automated test suite inside the virtual environment:
 .\.venv\Scripts\python.exe -m pytest tests -v
 ```
 
-Currently **295 tests** pass, of which **82** are the UI tests in `tests/test_ui/`.
+Currently **300 tests** pass, of which **87** are the UI tests in `tests/test_ui/` (latest verified M26 audit run; the suite was not re-run for this documentation change).
