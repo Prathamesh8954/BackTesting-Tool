@@ -15,6 +15,8 @@ The architecture enforces a strict separation between data ingestion, strategy l
 * **Milestone 5 (Complete)**: A read-only, library-only per-bar drawdown series built on the Milestone 4 drawdown conventions.
 * **Milestone 6 (Initial workflow; scope pending review)**: An initial Streamlit chart-data-to-backtest front-end (`app.py`). The full UI and the remaining planned milestones are not yet complete.
 * **Milestone 7 (Complete)**: A read-only Streamlit metrics & drawdown dashboard built on the Milestone 4 performance metrics and the Milestone 5 per-bar drawdown series — a performance-metrics panel and a per-bar percentage drawdown chart in the results view.
+* **Milestone 8 (Complete)**: A pure, read-only validated trade-to-fill linkage helper (`link_trade_fills`) that pairs each completed trade with the entry and closing fills that produced it, positionally and field-by-field, and fails loudly on any stream it cannot prove.
+* **Milestone 9 (Implemented; not yet committed)**: A read-only Streamlit trade audit trail that surfaces the Milestone 8 linkage — one row per completed trade with its validated entry and closing fill details, and an in-place `linkage` annotation on the existing fills table that labels each fill's role (an open position's trailing entry is labelled, never given a synthetic trade row).
 
 ---
 
@@ -161,7 +163,7 @@ The workflow guides you through:
 2. **Validate** the data, with clear messages for missing columns, invalid values, or other failures.
 3. **Review** the loaded data state (source, number of rows, available time range, and columns).
 4. **Configure** the backtest (initial capital, risk model, quantity step, commission, and slippage).
-5. **Run** the strategy and inspect the results, including the accounting summary, the performance metrics panel, the equity curve, the per-bar drawdown chart, trades, fills, and rejected decisions.
+5. **Run** the strategy and inspect the results, including the accounting summary, the performance metrics panel, the equity curve, the per-bar drawdown chart, the trade audit trail, trades, fills, and rejected decisions.
 
 > Note: This is an initial workflow. The full interactive dashboard and the remaining planned milestones are not yet complete.
 
@@ -169,7 +171,7 @@ The workflow guides you through:
 
 ## 5. Current vs. Future Milestone Capabilities
 
-### Currently Implemented (Milestones 1, 2, 3, 4, 5 & 7)
+### Currently Implemented (Milestones 1, 2, 3, 4, 5, 7, 8 & 9)
 * **Read-Only Ingestion**: CSV and Parquet files loaded without modifying disk files.
 * **Non-Mutating Validation**: Comprehensive OHLC invariant checks, non-numeric checks, and separation of fatal errors from warnings.
 * **Strategy Interface**: Universal `Strategy.on_bar(context)` lifecycle supporting stateful strategies.
@@ -179,9 +181,11 @@ The workflow guides you through:
 * **Performance Metrics (Milestone 4)**: Read-only summary derived from the engine result — win/loss/breakeven counts, win rate, expectancy, profit factor, averages, average bars held, and maximum currency/percentage drawdown. Auditable trade logs, equity curves, and the drawdown baseline come from the Milestone 3 execution records.
 * **Per-Bar Drawdown Series (Milestone 5)**: A read-only, library-only per-bar drawdown path derived from the equity curve using the Milestone 4 drawdown conventions.
 * **Metrics & Drawdown Dashboard (Milestone 7)**: The Streamlit results view surfaces the Milestone 4 performance metrics in a dedicated panel and charts the Milestone 5 per-bar percentage drawdown beneath the equity curve. Undefined metrics are shown as `n/a`.
+* **Validated Trade-to-Fill Linkage (Milestone 8)**: A pure, read-only helper pairs every completed trade with its entry and closing fills positionally (never by timestamp or tag) and validates the association field-by-field, raising an explicit error on any stream it cannot prove.
+* **Trade Audit Trail (Milestone 9)**: The Streamlit results view adds a read-only audit section between Trades and Fills that shows each completed trade with its validated entry and closing fill details, and annotates the existing fills table in place with a role column (`Trade <n> entry` / `Trade <n> close`, or an open-position entry label). A linkage failure is shown to the user while the remaining results sections still render.
 
 ### Partially Implemented
-* **User Interface (Milestone 6)**: An initial Streamlit chart-data-to-backtest workflow (see Section 4). Its remaining scope has not yet been reviewed; the full interactive audit dashboard is not complete.
+* **User Interface (Milestone 6)**: An initial Streamlit chart-data-to-backtest workflow (see Section 4). Its remaining scope has not yet been fully reviewed; the trade audit-trail slice is now covered by Milestones 8 and 9, and the wider interactive audit dashboard is not complete.
 
 ### Deferred to Future Milestones (Not Available Yet)
 * **R-Multiple & Excursion Analytics**: $R$-multiple target reachability, MFE/MAE, Sharpe, annualization, and exposure remain deferred (they require Milestone 3 record extensions).
@@ -195,3 +199,5 @@ Run the full automated test suite inside the virtual environment:
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tests -v
 ```
+
+Currently **271 tests** pass, of which **82** are the UI tests in `tests/test_ui/`.

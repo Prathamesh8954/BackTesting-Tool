@@ -126,3 +126,122 @@ def test_app_surfaces_metric_error_instead_of_hiding_panel(demo_raw_dir, monkeyp
     assert "Equity curve" in headers
     assert "Drawdown (%)" in headers
     assert "Trades" in headers
+
+
+OPEN_POSITION_STRATEGY = '''
+class Open(Strategy):
+    def on_bar(self, context):
+        if context.current_index == 0:
+            return [StrategyDecision(action=OrderAction.ENTER_LONG, stop_loss=90.0)]
+        return []
+'''
+
+
+def _run_demo(at, strategy: str = DEMO_STRATEGY):
+    at.selectbox[0].select("demo.csv").run()
+    at.text_area[0].set_value(strategy).run()
+    at.button[0].click().run()
+    return at
+
+
+def test_app_renders_trade_audit_trail_between_trades_and_fills(demo_raw_dir):
+    """M9: the audit section sits between Trades and Fills and shows valid rows."""
+    at = _run_demo(streamlit_testing.AppTest.from_file(APP_PATH, default_timeout=30).run())
+
+    assert not at.exception
+    assert not at.error
+
+    headers = [subheader.value for subheader in at.subheader]
+    assert headers.index("Trades") + 1 == headers.index("Trade audit trail")
+    assert headers.index("Trade audit trail") + 1 == headers.index("Fills")
+
+    frames = [frame.value for frame in at.dataframe if isinstance(frame.value, pd.DataFrame)]
+    # One audit row pairing the demo trade with both of its fills.
+    assert any(
+        "exit_fill_kind" in frame.columns and "entry_fill_bar" in frame.columns
+        for frame in frames
+    )
+    # The single fills table is annotated in place, not duplicated.
+    linked = [frame for frame in frames if "linkage" in frame.columns]
+    assert len(linked) == 1
+    assert list(linked[0]["linkage"]) == ["Trade 0 entry", "Trade 0 close"]
+
+
+@pytest.mark.parametrize(
+    "failing_helper",
+    ["linked_trades_to_dataframe", "linked_fills_to_dataframe"],
+)
+def test_app_surfaces_linkage_error_and_keeps_other_sections(
+    demo_raw_dir, monkeypatch, failing_helper
+):
+    """A TradeFillLinkageError is shown, and the remaining sections still render."""
+
+    def _raise_linkage_error(result):
+        raise workflow.TradeFillLinkageError("synthetic linkage failure")
+
+    # app.py resolves the workflow helpers at call time; patching either one must
+    # be contained by the same error handling.
+    monkeypatch.setattr(workflow, failing_helper, _raise_linkage_error)
+
+    at = _run_demo(streamlit_testing.AppTest.from_file(APP_PATH, default_timeout=30).run())
+
+    assert not at.exception
+    assert any("linkage consistency check" in error.value for error in at.error)
+
+    headers = [subheader.value for subheader in at.subheader]
+    for expected in (
+        "Equity curve",
+        "Drawdown (%)",
+        "Trades",
+        "Trade audit trail",
+        "Fills",
+        "Rejections",
+    ):
+        assert expected in headers, expected
+
+    # The fills table still renders, just without the unavailable annotation.
+    frames = [frame.value for frame in at.dataframe if isinstance(frame.value, pd.DataFrame)]
+    assert any("kind" in frame.columns and "tag" in frame.columns for frame in frames)
+    assert not any("linkage" in frame.columns for frame in frames)
+    # No stale/partial audit table is shown either: the audit section reports the
+    # error instead of a table, whichever of the two helpers failed.
+    assert not any("exit_fill_kind" in frame.columns for frame in frames)
+
+
+def test_app_does_not_swallow_unrelated_audit_exceptions(demo_raw_dir, monkeypatch):
+    """Only TradeFillLinkageError is contained; other exceptions must propagate."""
+
+    def _raise_runtime_error(result):
+        raise RuntimeError("synthetic unrelated failure")
+
+    monkeypatch.setattr(workflow, "linked_trades_to_dataframe", _raise_runtime_error)
+
+    at = _run_demo(streamlit_testing.AppTest.from_file(APP_PATH, default_timeout=30).run())
+
+    # The unrelated error escaped the linkage handler rather than being hidden.
+    assert at.exception
+    assert any("synthetic unrelated failure" in exc.value for exc in at.exception)
+    assert not any("linkage consistency check" in error.value for error in at.error)
+
+
+def test_app_marks_open_position_entry_and_creates_no_trade_row(demo_raw_dir):
+    """M9: a position left open is labelled, with no synthetic completed trade."""
+    at = _run_demo(
+        streamlit_testing.AppTest.from_file(APP_PATH, default_timeout=30).run(),
+        OPEN_POSITION_STRATEGY,
+    )
+
+    assert not at.exception
+    # No completed trade exists: the audit section says so rather than inventing one.
+    assert any(info.value == "No completed trades to audit." for info in at.info)
+
+    frames = [frame.value for frame in at.dataframe if isinstance(frame.value, pd.DataFrame)]
+    linked = [frame for frame in frames if "linkage" in frame.columns]
+    assert len(linked) == 1
+    assert list(linked[0]["linkage"]) == ["Open-position entry — no completed trade."]
+    # No completed-trade row is rendered for the still-open position. Identify
+    # each results table by a column it alone owns (the trades table owns
+    # `entry_bar`, the audit table owns `exit_fill_kind`) rather than imposing a
+    # blanket restriction on every rendered table's column names.
+    assert not any("entry_bar" in frame.columns for frame in frames)
+    assert not any("exit_fill_kind" in frame.columns for frame in frames)

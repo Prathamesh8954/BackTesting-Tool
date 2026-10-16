@@ -117,8 +117,37 @@ def _render_results(result) -> None:
     else:
         st.dataframe(trades, use_container_width=True)
 
+    # M9: read-only trade-to-fill audit trail. Each row pairs a completed trade
+    # with the fills that produced it using the M8 linkage; nothing is re-derived
+    # here and the strategy is never rerun. A linkage failure is reported without
+    # hiding the remaining results sections.
+    try:
+        audit = workflow.linked_trades_to_dataframe(result)
+        linked_fills = workflow.linked_fills_to_dataframe(result)
+    except workflow.TradeFillLinkageError as exc:
+        audit = None
+        linked_fills = None
+        linkage_error: workflow.TradeFillLinkageError | None = exc
+    else:
+        linkage_error = None
+
+    st.subheader("Trade audit trail")
+    if linkage_error is not None:
+        st.error(
+            "Trade-to-fill linkage could not be validated: the result failed a "
+            f"linkage consistency check. ({linkage_error})"
+        )
+    elif audit is not None and audit.empty:
+        st.info("No completed trades to audit.")
+    else:
+        st.dataframe(audit, use_container_width=True)
+
     st.subheader("Fills")
-    fills = workflow.fills_to_dataframe(result)
+    fills = (
+        linked_fills
+        if linked_fills is not None
+        else workflow.fills_to_dataframe(result)
+    )
     if fills.empty:
         st.info("No fills.")
     else:

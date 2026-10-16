@@ -535,6 +535,89 @@ def trades_to_dataframe(result: BacktestResult) -> pd.DataFrame:
     )
 
 
+# Role shown for the unmatched ENTRY fill of a position left open at the end of
+# the data. It is deliberately explicit that no completed trade exists for it.
+OPEN_POSITION_ENTRY_LINKAGE = "Open-position entry — no completed trade."
+
+
+def linked_trades_to_dataframe(result: BacktestResult) -> pd.DataFrame:
+    """One row per completed trade with its validated entry and closing fills.
+
+    Read-only: ``result`` is inspected via :func:`link_trade_fills` and never
+    mutated or rerun. Every displayed fill value comes from the paired source
+    records, which the M8 linkage has already validated field-by-field against
+    the trade. No row is produced for a position left open at the end of the
+    data (its trailing ENTRY fill has no completed trade).
+
+    Columns carry the trade's identity and economics plus the bar, timestamp,
+    price, commission, tag and close-kind of both of its fills. The entry kind
+    is omitted because it is always ``ENTRY`` (validated by the linkage), and
+    ``side``/``slippage`` are omitted because they have no ``Trade`` counterpart
+    and therefore take part in no validated comparison.
+
+    Raises
+    ------
+    TradeFillLinkageError
+        If the records cannot be linked or validated; nothing is rendered from
+        an unprovable association.
+    """
+    rows = []
+    for item in link_trade_fills(result):
+        trade = item.trade
+        entry = item.entry_fill
+        closing = item.exit_fill
+        rows.append(
+            {
+                "trade": item.index,
+                "direction": trade.direction,
+                "quantity": trade.quantity,
+                "entry_fill_bar": entry.bar_index,
+                "entry_fill_timestamp": entry.timestamp,
+                "entry_fill_price": entry.price,
+                "entry_fill_commission": entry.commission,
+                "entry_fill_tag": entry.tag,
+                "exit_fill_kind": closing.kind.value,
+                "exit_fill_bar": closing.bar_index,
+                "exit_fill_timestamp": closing.timestamp,
+                "exit_fill_price": closing.price,
+                "exit_fill_commission": closing.commission,
+                "exit_fill_tag": closing.tag,
+                "gross_pnl": trade.gross_pnl,
+                "net_pnl": trade.net_pnl,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def linked_fills_to_dataframe(result: BacktestResult) -> pd.DataFrame:
+    """The fills table annotated with a ``linkage`` column naming each fill's role.
+
+    The columns of :func:`fills_to_dataframe` are preserved in order; ``linkage``
+    is appended as the final column so the existing fills view gains traceability
+    without becoming a second table. Values are ``"Trade <n> entry"`` /
+    ``"Trade <n> close"`` (0-based trade index, matching ``LinkedTrade.index``)
+    or :data:`OPEN_POSITION_ENTRY_LINKAGE` for the unmatched trailing ENTRY fill
+    of an open position.
+
+    Read-only and deterministic. Raises :class:`TradeFillLinkageError` when the
+    linkage cannot be validated.
+    """
+    frame = fills_to_dataframe(result)
+    linked = link_trade_fills(result)
+    # Built in fill-stream order, so it aligns row-for-row with the fills table.
+    roles: list[str] = []
+    for item in linked:
+        roles.append(f"Trade {item.index} entry")
+        roles.append(f"Trade {item.index} close")
+    if not result.is_flat:
+        # Validated by link_trade_fills: the trailing fill of an open position
+        # is exactly one unmatched ENTRY.
+        roles.append(OPEN_POSITION_ENTRY_LINKAGE)
+    # A length mismatch would raise rather than silently mislabel a fill.
+    frame["linkage"] = roles
+    return frame
+
+
 def rejections_to_dataframe(result: BacktestResult) -> pd.DataFrame:
     return pd.DataFrame(
         [

@@ -349,3 +349,291 @@ def test_drawdown_to_dataframe_empty_equity_curve():
     summary = dict(workflow.performance_summary(empty))
     assert summary["Closed trades"] == "0"
     assert summary["Max drawdown"] == "0.00"
+
+
+# ---------------------------------------------------------------------------
+# Milestone 9: trade-to-fill audit trail (pure DataFrame helpers)
+# ---------------------------------------------------------------------------
+
+
+def _bar_ts(index: int) -> pd.Timestamp:
+    """Matches ``make_df``'s default clock (09:30, hourly) for engine output."""
+    return pd.Timestamp("2026-01-01 09:30") + pd.Timedelta(hours=index)
+
+
+def _config(**overrides) -> EngineConfig:
+    kwargs = {
+        "initial_capital": 100_000.0,
+        "risk_absolute": 1000.0,
+        "quantity_step": 1.0,
+    }
+    kwargs.update(overrides)
+    return EngineConfig(**kwargs)
+
+
+def test_linked_trades_to_dataframe_pairs_each_trade_with_its_validated_fills():
+    result = three_trade_result()
+    frame = workflow.linked_trades_to_dataframe(result)
+
+    assert list(frame.columns) == [
+        "trade",
+        "direction",
+        "quantity",
+        "entry_fill_bar",
+        "entry_fill_timestamp",
+        "entry_fill_price",
+        "entry_fill_commission",
+        "entry_fill_tag",
+        "exit_fill_kind",
+        "exit_fill_bar",
+        "exit_fill_timestamp",
+        "exit_fill_price",
+        "exit_fill_commission",
+        "exit_fill_tag",
+        "gross_pnl",
+        "net_pnl",
+    ]
+    assert len(frame) == 3
+
+    # Every cell must match the paired source records exactly (M8's positional
+    # linkage), not a re-derived value.
+    for k in range(3):
+        row = frame.iloc[k]
+        trade = result.trades[k]
+        entry = result.fills[2 * k]
+        closing = result.fills[2 * k + 1]
+        assert row["trade"] == k
+        assert row["direction"] == trade.direction == entry.direction
+        assert row["quantity"] == trade.quantity
+        assert row["entry_fill_bar"] == entry.bar_index == trade.entry_bar_index
+        assert row["entry_fill_timestamp"] == entry.timestamp == trade.entry_timestamp
+        assert row["entry_fill_price"] == entry.price == trade.entry_price
+        assert row["entry_fill_commission"] == entry.commission == trade.entry_commission
+        assert row["entry_fill_tag"] == entry.tag == trade.tag
+        assert row["exit_fill_kind"] == closing.kind.value == trade.exit_kind.value
+        assert row["exit_fill_bar"] == closing.bar_index == trade.exit_bar_index
+        assert row["exit_fill_timestamp"] == closing.timestamp == trade.exit_timestamp
+        assert row["exit_fill_price"] == closing.price == trade.exit_price
+        assert row["exit_fill_commission"] == closing.commission == trade.exit_commission
+        assert row["exit_fill_tag"] == closing.tag
+        assert row["gross_pnl"] == trade.gross_pnl
+        assert row["net_pnl"] == trade.net_pnl
+
+
+def test_linked_trades_to_dataframe_hand_computed_engine_rows():
+    """Hand-computed from the three_trade_result fixture's known fills."""
+    frame = workflow.linked_trades_to_dataframe(three_trade_result())
+
+    assert list(frame["trade"]) == [0, 1, 2]
+    assert list(frame["direction"]) == ["LONG", "SHORT", "LONG"]
+    assert list(frame["quantity"]) == [100.0, 100.0, 100.0]
+    assert list(frame["entry_fill_bar"]) == [1, 3, 5]
+    assert list(frame["exit_fill_bar"]) == [2, 4, 6]
+    assert list(frame["entry_fill_timestamp"]) == [_bar_ts(1), _bar_ts(3), _bar_ts(5)]
+    assert list(frame["exit_fill_timestamp"]) == [_bar_ts(2), _bar_ts(4), _bar_ts(6)]
+    assert list(frame["entry_fill_price"]) == [100.0, 100.0, 100.0]
+    assert list(frame["exit_fill_price"]) == [110.0, 120.0, 90.0]
+    assert list(frame["entry_fill_commission"]) == [0.0, 0.0, 0.0]
+    assert list(frame["exit_fill_commission"]) == [0.0, 0.0, 0.0]
+    assert list(frame["entry_fill_tag"]) == ["", "", ""]
+    assert list(frame["exit_fill_kind"]) == ["EXIT", "EXIT", "EXIT"]
+    assert list(frame["gross_pnl"]) == [1000.0, -2000.0, -1000.0]
+    assert list(frame["net_pnl"]) == [1000.0, -2000.0, -1000.0]
+
+
+def test_linked_fills_to_dataframe_appends_roles_in_stream_order():
+    result = three_trade_result()
+    frame = workflow.linked_fills_to_dataframe(result)
+
+    # The existing fills columns are preserved in order; linkage is appended.
+    assert list(frame.columns) == [
+        "bar",
+        "timestamp",
+        "kind",
+        "side",
+        "direction",
+        "quantity",
+        "price",
+        "commission",
+        "slippage",
+        "tag",
+        "linkage",
+    ]
+    # The annotated view is the original fills table plus one column.
+    plain = workflow.fills_to_dataframe(result)
+    pd.testing.assert_frame_equal(frame[plain.columns], plain)
+
+    assert list(frame["linkage"]) == [
+        "Trade 0 entry",
+        "Trade 0 close",
+        "Trade 1 entry",
+        "Trade 1 close",
+        "Trade 2 entry",
+        "Trade 2 close",
+    ]
+
+
+def test_audit_same_bar_round_trip_links_when_timestamps_collide():
+    df = make_df([
+        (100.0, 102.0, 98.0, 100.0),  # bar 0: signal only
+        (100.0, 101.0, 90.0, 95.0),   # bar 1: entry @100, low 90 hits stop 98
+    ])
+    script = {
+        0: [StrategyDecision(action=OrderAction.ENTER_LONG, stop_loss=98.0, tag="sl_entry")]
+    }
+    result = run_backtest(ScriptedStrategy(script), df, _config())
+    assert result.fills[0].timestamp == result.fills[1].timestamp
+
+    audit = workflow.linked_trades_to_dataframe(result)
+    assert len(audit) == 1
+    row = audit.iloc[0]
+    # Entry and stop fill share bar 1 and its timestamp, so the pairing shown is
+    # positional, never a timestamp join.
+    assert row["entry_fill_bar"] == row["exit_fill_bar"] == 1
+    assert row["entry_fill_timestamp"] == row["exit_fill_timestamp"] == _bar_ts(1)
+    assert row["exit_fill_kind"] == "STOP_LOSS"
+    assert row["entry_fill_price"] == 100.0
+    assert row["exit_fill_price"] == 98.0
+    assert row["quantity"] == 500.0
+    assert row["net_pnl"] == -1000.0
+    assert row["entry_fill_tag"] == row["exit_fill_tag"] == "sl_entry"
+
+    fills = workflow.linked_fills_to_dataframe(result)
+    assert list(fills["linkage"]) == ["Trade 0 entry", "Trade 0 close"]
+
+
+def test_audit_open_position_trailing_entry_has_no_completed_trade_row():
+    """Engine's 2N+1 shape: one completed trade plus a trailing open entry."""
+    df = make_df([
+        (100.0, 102.0, 98.0, 100.0),   # 0: signal
+        (100.0, 108.0, 95.0, 105.0),   # 1: trade A entry @100
+        (110.0, 112.0, 109.0, 111.0),  # 2: trade A exit @110, then re-entry signal
+        (100.0, 108.0, 95.0, 105.0),   # 3: trade B entry @100, held open
+    ])
+    script = {
+        0: [StrategyDecision(action=OrderAction.ENTER_LONG, stop_loss=90.0)],
+        1: [StrategyDecision(action=OrderAction.EXIT)],
+        2: [StrategyDecision(action=OrderAction.ENTER_LONG, stop_loss=90.0)],
+    }
+    result = run_backtest(ScriptedStrategy(script), df, _config())
+    assert len(result.fills) == 3
+    assert len(result.trades) == 1
+    assert result.is_flat is False
+
+    audit = workflow.linked_trades_to_dataframe(result)
+    # Only the completed trade is audited: no synthetic row for the open position.
+    assert list(audit["trade"]) == [0]
+    assert list(audit["exit_fill_bar"]) == [2]
+
+    fills = workflow.linked_fills_to_dataframe(result)
+    assert list(fills["linkage"]) == [
+        "Trade 0 entry",
+        "Trade 0 close",
+        workflow.OPEN_POSITION_ENTRY_LINKAGE,
+    ]
+    # Exact required wording, attached to the trailing bar-3 ENTRY fill.
+    assert fills["linkage"].iloc[2] == "Open-position entry — no completed trade."
+    assert fills["bar"].iloc[2] == 3
+    assert fills["kind"].iloc[2] == "ENTRY"
+
+
+def test_audit_open_position_without_completed_trades():
+    result = open_long_result()
+    assert result.trades == ()
+    assert result.is_flat is False
+
+    audit = workflow.linked_trades_to_dataframe(result)
+    assert audit.empty
+
+    fills = workflow.linked_fills_to_dataframe(result)
+    assert list(fills["linkage"]) == ["Open-position entry — no completed trade."]
+
+
+def test_audit_empty_result_yields_empty_frames():
+    result = do_nothing_result()
+
+    audit = workflow.linked_trades_to_dataframe(result)
+    fills = workflow.linked_fills_to_dataframe(result)
+
+    assert audit.empty
+    assert fills.empty
+    # The annotation column exists even with no rows, so the view stays stable.
+    assert "linkage" in fills.columns
+
+
+def test_audit_shows_entry_and_exit_tags_verbatim_without_a_tag_join():
+    df = make_df([
+        (100.0, 102.0, 98.0, 100.0),
+        (100.0, 108.0, 95.0, 105.0),   # 1: entry, tag E1
+        (110.0, 112.0, 109.0, 111.0),  # 2: exit, tag X1
+    ])
+    script = {
+        0: [StrategyDecision(action=OrderAction.ENTER_LONG, stop_loss=90.0, tag="E1")],
+        1: [StrategyDecision(action=OrderAction.EXIT, tag="X1")],
+    }
+    result = run_backtest(ScriptedStrategy(script), df, _config())
+
+    row = workflow.linked_trades_to_dataframe(result).iloc[0]
+    assert row["entry_fill_tag"] == "E1"
+    assert row["exit_fill_tag"] == "X1"
+
+
+def test_audit_helpers_propagate_linkage_failures():
+    # Trades recorded without any fills: the linkage is unavailable.
+    synthetic = make_result([make_trade(100.0)])
+    assert synthetic.fills == ()
+
+    with pytest.raises(workflow.TradeFillLinkageError, match="Linkage unavailable"):
+        workflow.linked_trades_to_dataframe(synthetic)
+    with pytest.raises(workflow.TradeFillLinkageError, match="Linkage unavailable"):
+        workflow.linked_fills_to_dataframe(synthetic)
+
+
+class _CountingStrategy(Strategy):
+    """Scripted strategy that records how often the engine invoked it."""
+
+    def __init__(self, script):
+        self._script = script
+        self.calls = 0
+
+    def on_bar(self, context):
+        self.calls += 1
+        return list(self._script.get(context.current_index, []))
+
+
+def test_audit_helpers_are_read_only_deterministic_and_never_rerun():
+    df = make_df([
+        (100.0, 102.0, 98.0, 100.0),
+        (100.0, 108.0, 95.0, 105.0),
+        (110.0, 112.0, 109.0, 111.0),
+    ])
+    script = {
+        0: [StrategyDecision(action=OrderAction.ENTER_LONG, stop_loss=90.0)],
+        1: [StrategyDecision(action=OrderAction.EXIT)],
+    }
+    strategy = _CountingStrategy(script)
+    result = run_backtest(strategy, df, _config())
+    calls_after_run = strategy.calls
+
+    fills_before = result.fills
+    trades_before = result.trades
+    fills_snapshot = tuple(result.fills)
+    trades_snapshot = tuple(result.trades)
+
+    audit_first = workflow.linked_trades_to_dataframe(result)
+    fills_first = workflow.linked_fills_to_dataframe(result)
+    audit_second = workflow.linked_trades_to_dataframe(result)
+    fills_second = workflow.linked_fills_to_dataframe(result)
+
+    # The helpers never invoked the strategy again (once per bar, 3 bars).
+    assert strategy.calls == calls_after_run == 3
+
+    # The result is untouched: same tuple objects, same contents.
+    assert result.fills is fills_before
+    assert result.trades is trades_before
+    assert result.fills == fills_snapshot
+    assert result.trades == trades_snapshot
+
+    # Deterministic: equal output on repeated calls.
+    pd.testing.assert_frame_equal(audit_first, audit_second)
+    pd.testing.assert_frame_equal(fills_first, fills_second)
