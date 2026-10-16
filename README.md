@@ -16,7 +16,7 @@ The architecture enforces a strict separation between data ingestion, strategy l
 * **Milestone 6 (Initial workflow; scope pending review)**: An initial Streamlit chart-data-to-backtest front-end (`app.py`). The full UI and the remaining planned milestones are not yet complete.
 * **Milestone 7 (Complete)**: A read-only Streamlit metrics & drawdown dashboard built on the Milestone 4 performance metrics and the Milestone 5 per-bar drawdown series — a performance-metrics panel and a per-bar percentage drawdown chart in the results view.
 * **Milestone 8 (Complete)**: A pure, read-only validated trade-to-fill linkage helper (`link_trade_fills`) that pairs each completed trade with the entry and closing fills that produced it, positionally and field-by-field, and fails loudly on any stream it cannot prove.
-* **Milestone 9 (Implemented; not yet committed)**: A read-only Streamlit trade audit trail that surfaces the Milestone 8 linkage — one row per completed trade with its validated entry and closing fill details, and an in-place `linkage` annotation on the existing fills table that labels each fill's role (an open position's trailing entry is labelled, never given a synthetic trade row).
+* **Milestone 9 (Complete)**: A read-only Streamlit trade audit trail that surfaces the Milestone 8 linkage — one row per completed trade with its validated entry and closing fill details, and an in-place `linkage` annotation on the existing fills table that labels each fill's role (an open position's trailing entry is labelled, never given a synthetic trade row).
 
 ---
 
