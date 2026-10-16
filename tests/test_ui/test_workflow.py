@@ -685,3 +685,117 @@ def test_performance_summary_renders_undefined_mean_r_as_na():
     assert summary["Mean R"] != "0.00"
     assert summary["R-multiple computable trades"] == "0"
     assert summary["R-multiple non-computable trades"] == "0"
+
+
+# ------------------------------------------------------ results filtering (M34)
+# ``filter_rows`` is the pure helper behind the results-table filter widgets. It
+# must reproduce the input when unset, intersect criteria, tolerate unknown
+# columns, never mutate its input, and stay deterministic.
+
+
+def _filter_frame() -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "direction": ["LONG", "SHORT", "LONG"],
+            "exit_kind": ["EXIT", "STOP_LOSS", "STOP_LOSS"],
+            "value": [1, 2, 3],
+        }
+    )
+
+
+def test_filter_rows_without_criteria_returns_equal_copy():
+    frame = _filter_frame()
+
+    result = workflow.filter_rows(frame, None)
+
+    pd.testing.assert_frame_equal(result, frame)
+    assert result is not frame
+
+
+def test_filter_rows_empty_criteria_mapping_returns_all_rows():
+    frame = _filter_frame()
+
+    result = workflow.filter_rows(frame, {})
+
+    pd.testing.assert_frame_equal(result, frame)
+
+
+def test_filter_rows_single_criterion_matches_selected_values():
+    frame = _filter_frame()
+
+    result = workflow.filter_rows(frame, {"direction": ["LONG"]})
+
+    assert list(result["value"]) == [1, 3]
+
+
+def test_filter_rows_combines_criteria_as_an_intersection():
+    frame = _filter_frame()
+
+    result = workflow.filter_rows(
+        frame, {"direction": ["LONG"], "exit_kind": ["STOP_LOSS"]}
+    )
+
+    assert list(result["value"]) == [3]
+
+
+def test_filter_rows_empty_selection_imposes_no_restriction():
+    frame = _filter_frame()
+
+    result = workflow.filter_rows(frame, {"direction": []})
+
+    pd.testing.assert_frame_equal(result, frame)
+
+
+def test_filter_rows_none_selection_imposes_no_restriction():
+    frame = _filter_frame()
+
+    result = workflow.filter_rows(frame, {"direction": None})
+
+    pd.testing.assert_frame_equal(result, frame)
+
+
+def test_filter_rows_unknown_column_imposes_no_restriction():
+    frame = _filter_frame()
+
+    result = workflow.filter_rows(frame, {"not_a_column": ["anything"]})
+
+    pd.testing.assert_frame_equal(result, frame)
+
+
+def test_filter_rows_no_match_returns_empty_frame_with_columns():
+    frame = _filter_frame()
+
+    result = workflow.filter_rows(
+        frame, {"direction": ["SHORT"], "exit_kind": ["EXIT"]}
+    )
+
+    assert result.empty
+    assert list(result.columns) == list(frame.columns)
+
+
+def test_filter_rows_does_not_mutate_input_and_preserves_row_order():
+    frame = _filter_frame()
+    before = frame.copy()
+
+    result = workflow.filter_rows(frame, {"direction": ["LONG"]})
+
+    pd.testing.assert_frame_equal(frame, before)
+    assert list(result.index) == [0, 2]
+
+
+def test_filter_rows_is_deterministic():
+    frame = _filter_frame()
+
+    first = workflow.filter_rows(frame, {"exit_kind": ["STOP_LOSS"]})
+    second = workflow.filter_rows(frame, {"exit_kind": ["STOP_LOSS"]})
+
+    pd.testing.assert_frame_equal(first, second)
+
+
+def test_filter_rows_on_empty_frame_is_safe():
+    frame = _filter_frame().iloc[0:0]
+
+    result = workflow.filter_rows(frame, {"direction": ["LONG"]})
+
+    assert result.empty
+    assert list(result.columns) == list(frame.columns)

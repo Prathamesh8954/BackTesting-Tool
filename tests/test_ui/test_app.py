@@ -264,3 +264,277 @@ def test_app_renders_r_multiple_panel_and_trades_column(demo_raw_dir):
 
     frames = [frame.value for frame in at.dataframe if isinstance(frame.value, pd.DataFrame)]
     assert any("r_multiple" in frame.columns for frame in frames)
+
+
+# ------------------------------------------------ results filtering (M34)
+# A dedicated two-trade run is used here so a filter can actually be narrowed to
+# a single row and so a *combination* of two filters can be made to match
+# nothing. Trade 0 is a LONG closed by a market EXIT; trade 1 is a SHORT closed
+# by its stop-loss, giving both direction and exit-kind columns two values each.
+
+TWO_TRADE_STRATEGY = '''
+class TwoTrades(Strategy):
+    def on_bar(self, context):
+        if context.current_index == 0:
+            return [StrategyDecision(action=OrderAction.ENTER_LONG, stop_loss=90.0)]
+        if context.current_index == 1:
+            return [StrategyDecision(action=OrderAction.EXIT)]
+        if context.current_index == 2:
+            return [StrategyDecision(action=OrderAction.ENTER_SHORT, stop_loss=110.0)]
+        return []
+'''
+
+
+@pytest.fixture
+def two_trade_raw_dir(tmp_path, monkeypatch):
+    raw_dir = tmp_path / "raw"
+    raw_dir.mkdir()
+    df = pd.DataFrame(
+        {
+            "timestamp": pd.date_range("2026-01-01 09:30", periods=5, freq="1h"),
+            "open": [100.0, 100.0, 110.0, 100.0, 105.0],
+            "high": [102.0, 108.0, 112.0, 102.0, 115.0],
+            "low": [98.0, 95.0, 109.0, 98.0, 104.0],
+            "close": [100.0, 105.0, 111.0, 100.0, 110.0],
+            "volume": [1000.0, 1500.0, 1200.0, 1800.0, 2000.0],
+        }
+    )
+    df.to_csv(raw_dir / "demo.csv", index=False)
+    monkeypatch.setattr(workflow, "DEFAULT_RAW_DIR", raw_dir)
+    return raw_dir
+
+
+def _multiselect(at, label: str):
+    matches = [widget for widget in at.multiselect if widget.label == label]
+    assert len(matches) == 1, f"expected exactly one {label!r} filter, found {len(matches)}"
+    return matches[0]
+
+
+def _trades_frame(at) -> pd.DataFrame:
+    frames = [
+        frame.value
+        for frame in at.dataframe
+        if isinstance(frame.value, pd.DataFrame) and "entry_bar" in frame.value.columns
+    ]
+    assert len(frames) == 1, f"expected one trades table, found {len(frames)}"
+    return frames[0]
+
+
+def _run_two_trades():
+    at = streamlit_testing.AppTest.from_file(APP_PATH, default_timeout=30).run()
+    return _run_demo(at, TWO_TRADE_STRATEGY)
+
+
+def test_app_renders_filter_widgets_with_data_derived_options(two_trade_raw_dir):
+    """M34: filter widgets appear and only offer values present in the table."""
+    at = _run_two_trades()
+
+    assert not at.exception
+    assert not at.error
+
+    assert _multiselect(at, "Filter trades by direction").options == ["LONG", "SHORT"]
+    assert _multiselect(at, "Filter trades by exit kind").options == ["EXIT", "STOP_LOSS"]
+    assert _multiselect(at, "Filter fills by kind").options == ["ENTRY", "EXIT", "STOP_LOSS"]
+    assert _multiselect(at, "Filter fills by direction").options == ["LONG", "SHORT"]
+
+
+def test_app_unset_trade_filter_reproduces_the_full_table(two_trade_raw_dir):
+    """M34: default (empty) selections leave the trades table unchanged."""
+    at = _run_two_trades()
+
+    assert not at.exception
+    trades = _trades_frame(at)
+    assert len(trades) == 2
+    # Both directions are present, and nothing was dropped by a default filter.
+    assert sorted(trades["direction"]) == ["LONG", "SHORT"]
+
+
+def test_app_direction_filter_narrows_the_trade_and_audit_tables(two_trade_raw_dir):
+    """M34: a selection narrows the trades table and the shared audit trail."""
+    at = _run_two_trades()
+
+    _multiselect(at, "Filter trades by direction").set_value(["SHORT"])
+    at.run()
+
+    assert not at.exception
+    trades = _trades_frame(at)
+    assert len(trades) == 1
+    assert list(trades["direction"]) == ["SHORT"]
+
+    # The audit trail shares the trade's direction filter.
+    audits = [
+        frame.value
+        for frame in at.dataframe
+        if isinstance(frame.value, pd.DataFrame) and "exit_fill_kind" in frame.value.columns
+    ]
+    assert len(audits) == 1
+    assert list(audits[0]["direction"]) == ["SHORT"]
+
+
+def test_app_combined_trade_filters_can_match_nothing(two_trade_raw_dir):
+    """M34: an intersection with no rows shows the empty notice, not a table."""
+    at = _run_two_trades()
+
+    _multiselect(at, "Filter trades by direction").set_value(["SHORT"])
+    at.run()
+    _multiselect(at, "Filter trades by exit kind").set_value(["EXIT"])
+    at.run()
+
+    assert not at.exception
+    assert any(
+        info.value == "No trades match the selected filters." for info in at.info
+    )
+    # No trades table is rendered once the filter matches nothing.
+    frames = [
+        frame.value
+        for frame in at.dataframe
+        if isinstance(frame.value, pd.DataFrame) and "entry_bar" in frame.value.columns
+    ]
+    assert frames == []
+
+
+def test_app_clearing_trade_filters_restores_the_full_table(two_trade_raw_dir):
+    """M34: unsetting a filter returns the table to its full, unfiltered state."""
+    at = _run_two_trades()
+
+    _multiselect(at, "Filter trades by direction").set_value(["SHORT"])
+    at.run()
+    assert len(_trades_frame(at)) == 1
+
+    _multiselect(at, "Filter trades by direction").set_value([])
+    at.run()
+
+    assert not at.exception
+    assert len(_trades_frame(at)) == 2
+
+
+def test_app_fill_filter_narrows_the_fills_table(two_trade_raw_dir):
+    """M34: fills filter independently by kind without affecting the trades table."""
+    at = _run_two_trades()
+
+    _multiselect(at, "Filter fills by kind").set_value(["STOP_LOSS"])
+    at.run()
+
+    assert not at.exception
+    fills = [
+        frame.value
+        for frame in at.dataframe
+        if isinstance(frame.value, pd.DataFrame) and "kind" in frame.value.columns
+    ]
+    assert len(fills) == 1
+    assert list(fills[0]["kind"]) == ["STOP_LOSS"]
+    # The trades table is unaffected by the fills filter.
+    assert len(_trades_frame(at)) == 2
+
+
+REJECTION_STRATEGY = '''
+class Rejected(Strategy):
+    def on_bar(self, context):
+        if context.current_index == 0:
+            return [StrategyDecision(action=OrderAction.EXIT)]
+        return []
+'''
+
+
+def test_app_renders_rejection_filter_widget(demo_raw_dir):
+    """M34: the rejections table gains a reason filter when rejections exist."""
+    at = _run_demo(
+        streamlit_testing.AppTest.from_file(APP_PATH, default_timeout=30).run(),
+        REJECTION_STRATEGY,
+    )
+
+    assert not at.exception
+    assert not at.error
+
+    widget = _multiselect(at, "Filter rejections by reason")
+    assert widget.options == ["EXIT_WHILE_FLAT"]
+
+    rejections = [
+        frame.value
+        for frame in at.dataframe
+        if isinstance(frame.value, pd.DataFrame) and "reason" in frame.value.columns
+    ]
+    assert len(rejections) == 1
+    assert list(rejections[0]["reason"]) == ["EXIT_WHILE_FLAT"]
+
+
+# ------------------------------------------- filtering regression tests (M36)
+# M35 S3: the M34 filter tests proved the *direction* filter end-to-end but left
+# two paths only indirectly covered. These tests exercise them directly and each
+# rejects at least one row, so a no-op filter would fail them.
+
+def test_app_exit_kind_filter_narrows_the_audit_trail_via_mapping(two_trade_raw_dir):
+    """M36 (S3): the audit trail narrows through its exit_fill_kind mapping.
+
+    The direction filter is deliberately left unset, so the audit's two rows can
+    only be reduced to one by the ``exit_kind`` -> ``exit_fill_kind`` remap; a
+    broken mapping would show both rows.
+    """
+    at = _run_two_trades()
+
+    _multiselect(at, "Filter trades by exit kind").set_value(["STOP_LOSS"])
+    at.run()
+
+    assert not at.exception
+    assert not at.error
+
+    # Trades: 2 -> 1, excluding the EXIT-closed trade.
+    trades = _trades_frame(at)
+    assert len(trades) == 1
+    assert list(trades["exit_kind"]) == ["STOP_LOSS"]
+
+    audits = [
+        frame.value
+        for frame in at.dataframe
+        if isinstance(frame.value, pd.DataFrame) and "exit_fill_kind" in frame.value.columns
+    ]
+    assert len(audits) == 1
+    # The audit narrowed to the single SHORT trade through the mapped column.
+    assert len(audits[0]) == 1
+    assert list(audits[0]["exit_fill_kind"]) == ["STOP_LOSS"]
+    assert list(audits[0]["direction"]) == ["SHORT"]
+
+
+TWO_REJECTION_STRATEGY = '''
+class TwoRejections(Strategy):
+    def on_bar(self, context):
+        if context.current_index == 0:
+            return [StrategyDecision(action=OrderAction.EXIT)]
+        if context.current_index == 1:
+            return [StrategyDecision(action=OrderAction.ENTER_LONG, stop_loss=90.0)]
+        if context.current_index == 2:
+            return [StrategyDecision(action=OrderAction.ENTER_LONG, stop_loss=90.0)]
+        return []
+'''
+
+
+def test_app_rejection_reason_filter_excludes_non_matching_rows(demo_raw_dir):
+    """M36 (S3): selecting a reason narrows the Rejections table (2 -> 1).
+
+    The strategy records two distinct reasons (``EXIT_WHILE_FLAT`` then
+    ``ENTRY_WHILE_OPEN``), so a selection must exclude at least one row.
+    """
+    at = _run_demo(
+        streamlit_testing.AppTest.from_file(APP_PATH, default_timeout=30).run(),
+        TWO_REJECTION_STRATEGY,
+    )
+
+    assert not at.exception
+    assert not at.error
+
+    widget = _multiselect(at, "Filter rejections by reason")
+    assert widget.options == ["ENTRY_WHILE_OPEN", "EXIT_WHILE_FLAT"]
+
+    widget.set_value(["EXIT_WHILE_FLAT"])
+    at.run()
+
+    assert not at.exception
+    assert not at.error
+
+    rejections = [
+        frame.value
+        for frame in at.dataframe
+        if isinstance(frame.value, pd.DataFrame) and "reason" in frame.value.columns
+    ]
+    assert len(rejections) == 1
+    assert list(rejections[0]["reason"]) == ["EXIT_WHILE_FLAT"]

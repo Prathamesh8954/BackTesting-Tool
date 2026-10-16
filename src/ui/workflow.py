@@ -11,7 +11,7 @@ import math
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Type
+from typing import Collection, Mapping, Optional, Type
 
 import pandas as pd
 
@@ -809,3 +809,40 @@ def drawdown_to_dataframe(result: BacktestResult) -> pd.DataFrame:
     if not frame.empty:
         frame = frame.set_index("timestamp")
     return frame
+
+
+# ------------------------------------------------------------------- filtering
+
+
+def filter_rows(
+    frame: pd.DataFrame,
+    criteria: Optional[Mapping[str, Collection[str]]] = None,
+) -> pd.DataFrame:
+    """Returns a copy of ``frame`` keeping the rows that satisfy every criterion.
+
+    ``criteria`` maps a column name to the collection of values the user has
+    selected for it. The rules are deliberately simple and total:
+
+    * A criterion that is ``None`` or empty selects **every** row, so an
+      all-unset filter set reproduces ``frame`` exactly (the default UI state).
+    * A criterion naming a column that ``frame`` does not have imposes no
+      restriction, so the helper can never raise on an unexpected table shape.
+    * Rows are kept only when they match **all** supplied criteria (the
+      combination is an intersection).
+
+    Read-only and deterministic, like the other ``src.ui.workflow`` helpers: the
+    input is never mutated, the result preserves the input column order and the
+    relative order of the surviving rows, and an empty match is an empty frame
+    that still carries the input columns.
+    """
+    filtered = frame.copy()
+    if not criteria:
+        return filtered
+    for column, allowed in criteria.items():
+        if allowed is None:
+            continue
+        allowed_values = list(allowed)
+        if not allowed_values or column not in filtered.columns:
+            continue
+        filtered = filtered.loc[filtered[column].isin(allowed_values)]
+    return filtered.copy()

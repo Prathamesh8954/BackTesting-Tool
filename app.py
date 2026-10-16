@@ -72,6 +72,39 @@ def _render_data_state(state: workflow.DatasetState) -> None:
         st.write(", ".join(state.columns) if state.columns else "Unavailable")
 
 
+def _render_filter_widgets(
+    frame: pd.DataFrame,
+    columns: tuple[tuple[str, str], ...],
+    key_prefix: str,
+) -> dict[str, list[str]]:
+    """Renders one multiselect per configurable column and returns the selection.
+
+    Options are the distinct values present in ``frame`` (sorted), so a filter
+    can only ever offer values the table actually contains. With nothing
+    selected every multiselect is empty, which :func:`workflow.filter_rows`
+    treats as "no restriction" — the unfiltered view is therefore the default.
+    """
+    selections: dict[str, list[str]] = {}
+    widget_columns = st.columns(len(columns))
+    for widget_column, (name, label) in zip(widget_columns, columns):
+        options = sorted(frame[name].astype(str).unique().tolist())
+        selections[name] = widget_column.multiselect(label, options, key=f"{key_prefix}:{name}")
+    return selections
+
+
+def _render_filtered_table(
+    frame: pd.DataFrame,
+    criteria: dict[str, list[str]],
+    empty_message: str,
+) -> None:
+    """Renders ``frame`` through :func:`workflow.filter_rows`, or an empty notice."""
+    filtered = workflow.filter_rows(frame, criteria)
+    if filtered.empty:
+        st.info(empty_message)
+    else:
+        st.dataframe(filtered, use_container_width=True)
+
+
 def _render_results(result) -> None:
     st.subheader("Performance & accounting")
     summary = workflow.result_summary(result)
@@ -112,10 +145,25 @@ def _render_results(result) -> None:
 
     st.subheader("Trades")
     trades = workflow.trades_to_dataframe(result)
+    trade_criteria: dict[str, list[str]] = {}
     if trades.empty:
         st.info("No completed trades.")
     else:
-        st.dataframe(trades, use_container_width=True)
+        # M34: read-only categorical filters over the completed trades. Empty
+        # selections are the default and reproduce the unfiltered table exactly.
+        trade_criteria = _render_filter_widgets(
+            trades,
+            (
+                ("direction", "Filter trades by direction"),
+                ("exit_kind", "Filter trades by exit kind"),
+            ),
+            "trades_filter",
+        )
+        _render_filtered_table(
+            trades,
+            trade_criteria,
+            "No trades match the selected filters.",
+        )
 
     # M9: read-only trade-to-fill audit trail. Each row pairs a completed trade
     # with the fills that produced it using the M8 linkage; nothing is re-derived
@@ -140,7 +188,17 @@ def _render_results(result) -> None:
     elif audit is not None and audit.empty:
         st.info("No completed trades to audit.")
     else:
-        st.dataframe(audit, use_container_width=True)
+        # M34: the audit trail shares the trade filters (its closing-fill kind
+        # column is named ``exit_fill_kind``), so the two views stay consistent.
+        audit_criteria = {
+            "direction": trade_criteria.get("direction", []),
+            "exit_fill_kind": trade_criteria.get("exit_kind", []),
+        }
+        _render_filtered_table(
+            audit,
+            audit_criteria,
+            "No trades match the selected filters.",
+        )
 
     st.subheader("Fills")
     fills = (
@@ -151,14 +209,35 @@ def _render_results(result) -> None:
     if fills.empty:
         st.info("No fills.")
     else:
-        st.dataframe(fills, use_container_width=True)
+        fill_criteria = _render_filter_widgets(
+            fills,
+            (
+                ("kind", "Filter fills by kind"),
+                ("direction", "Filter fills by direction"),
+            ),
+            "fills_filter",
+        )
+        _render_filtered_table(
+            fills,
+            fill_criteria,
+            "No fills match the selected filters.",
+        )
 
     st.subheader("Rejections")
     rejections = workflow.rejections_to_dataframe(result)
     if rejections.empty:
         st.info("No rejected decisions.")
     else:
-        st.dataframe(rejections, use_container_width=True)
+        rejection_criteria = _render_filter_widgets(
+            rejections,
+            (("reason", "Filter rejections by reason"),),
+            "rejections_filter",
+        )
+        _render_filtered_table(
+            rejections,
+            rejection_criteria,
+            "No rejections match the selected filters.",
+        )
 
     if result.unfilled_orders:
         st.subheader("Unfilled orders at end of data")
