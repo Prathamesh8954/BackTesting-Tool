@@ -2,7 +2,7 @@ import pandas as pd
 import pytest
 
 from src.execution import EngineConfig, run_backtest
-from src.metrics import MetricsConsistencyError
+from src.metrics import MetricsConsistencyError, compute_r_multiple_distribution
 from src.strategy.base import Strategy
 from src.strategy.models import OrderAction, StrategyDecision
 from src.ui import workflow
@@ -916,3 +916,92 @@ def test_filter_rows_by_range_intersects_with_filter_rows():
     result = workflow.filter_rows_by_range(categorical, "entry_bar", 4, 6)
 
     assert list(result["entry_bar"]) == [5]
+
+
+# --------------------------------------- R-multiple distribution display (M46)
+# The distribution is the Milestone 45 library's frozen ``RMultipleDistribution``
+# passed straight through these formatting helpers. Nothing is recomputed, and
+# the out-of-bin counts are reported separately rather than clamped into a bin.
+
+
+def test_r_multiple_distribution_to_dataframe_bins_and_counts():
+    """The three-trade result lands in three distinct, range-labelled bins."""
+    distribution = compute_r_multiple_distribution(three_trade_result().trades)
+
+    frame = workflow.r_multiple_distribution_to_dataframe(distribution)
+
+    assert list(frame.columns) == ["bin", "lower", "upper", "count"]
+    # 8 bins from the approved default edges; only the final bin is closed.
+    assert list(frame["bin"]) == [
+        "[-3.00, -2.00)",
+        "[-2.00, -1.00)",
+        "[-1.00, -0.50)",
+        "[-0.50, 0.00)",
+        "[0.00, 0.50)",
+        "[0.50, 1.00)",
+        "[1.00, 2.00)",
+        "[2.00, 3.00]",
+    ]
+    # R = [1.0, -2.0, -1.0] fill bins 6, 1 and 2.
+    assert list(frame["count"]) == [0, 1, 1, 0, 0, 0, 1, 0]
+    assert int(frame["count"].sum()) == 3
+
+
+def test_r_multiple_distribution_to_dataframe_empty_result():
+    """A run with no trades keeps its 8 bins, all at zero, with the columns."""
+    distribution = compute_r_multiple_distribution(do_nothing_result().trades)
+
+    frame = workflow.r_multiple_distribution_to_dataframe(distribution)
+
+    assert list(frame.columns) == ["bin", "lower", "upper", "count"]
+    assert len(frame) == 8
+    assert int(frame["count"].sum()) == 0
+
+
+def test_r_multiple_distribution_summary_reports_non_computable():
+    """Trades without an initial stop are counted, never binned."""
+    result = make_result([make_trade(100.0), make_trade(50.0)])
+
+    distribution = compute_r_multiple_distribution(result.trades)
+    summary = dict(workflow.r_multiple_distribution_summary(distribution))
+
+    assert summary["R-multiple non-computable"] == "2"
+    assert summary["R-multiple below range (< -3.00)"] == "0"
+    assert summary["R-multiple above range (> 3.00)"] == "0"
+
+
+def test_r_multiple_distribution_summary_reports_below_and_above_range():
+    """Out-of-range R-multiples are reported separately, never clamped."""
+    trades = [
+        make_trade(-40.0, initial_stop=90.0),  # R = -4.0, below the first edge
+        make_trade(35.0, initial_stop=90.0),  # R =  3.5, above the last edge
+    ]
+
+    distribution = compute_r_multiple_distribution(trades)
+    summary = dict(workflow.r_multiple_distribution_summary(distribution))
+    frame = workflow.r_multiple_distribution_to_dataframe(distribution)
+
+    assert summary["R-multiple below range (< -3.00)"] == "1"
+    assert summary["R-multiple above range (> 3.00)"] == "1"
+    assert summary["R-multiple non-computable"] == "0"
+    # Nothing was clamped into the edge bins.
+    assert int(frame["count"].sum()) == 0
+
+
+def test_r_multiple_distribution_display_is_deterministic_and_read_only():
+    """Formatting is deterministic and leaves the frozen distribution untouched."""
+    distribution = compute_r_multiple_distribution(three_trade_result().trades)
+
+    first_frame = workflow.r_multiple_distribution_to_dataframe(distribution)
+    second_frame = workflow.r_multiple_distribution_to_dataframe(distribution)
+
+    pd.testing.assert_frame_equal(first_frame, second_frame)
+    assert workflow.r_multiple_distribution_summary(distribution) == (
+        workflow.r_multiple_distribution_summary(distribution)
+    )
+    # The accounting invariant survives the display conversion.
+    assert int(first_frame["count"].sum()) + distribution.below_range_count + (
+        distribution.above_range_count
+    ) == distribution.computable_count
+    assert distribution.computable_count == 3
+    assert distribution.non_computable_count == 0

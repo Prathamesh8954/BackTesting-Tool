@@ -22,7 +22,11 @@ import streamlit as st
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from src.execution import EngineConfig, EngineConfigError, run_backtest  # noqa: E402
-from src.metrics import MetricsConsistencyError  # noqa: E402
+from src.metrics import (  # noqa: E402
+    MetricsConsistencyError,
+    RMultipleDistributionError,
+    compute_r_multiple_distribution,
+)
 from src.strategy.validation import StrategyValidationError  # noqa: E402
 from src.ui import workflow  # noqa: E402
 
@@ -212,6 +216,33 @@ def _render_results(result) -> None:
             "No trades match the selected filters.",
             bar_range=None if trades_range is None else ("entry_bar", *trades_range),
         )
+
+    # M46: read-only R-multiple distribution (Milestone 45 library) over *all*
+    # completed trades. Its scope is deliberately the whole run — matching the
+    # unfiltered "Mean R" row in the M4 panel above — so the table filters never
+    # affect it; the caption makes that explicit. Nothing is recomputed here.
+    st.subheader("R-multiple distribution")
+    if trades.empty:
+        st.info("No completed trades.")
+    else:
+        st.caption(
+            "All completed trades (not affected by the table filters). Bins are "
+            "half-open [lower, upper) except the final bin, which is closed."
+        )
+        try:
+            distribution = compute_r_multiple_distribution(result.trades)
+        except RMultipleDistributionError as exc:
+            st.error(f"The R-multiple distribution could not be computed. ({exc})")
+        else:
+            st.dataframe(
+                workflow.r_multiple_distribution_to_dataframe(distribution),
+                use_container_width=True,
+            )
+            distribution_columns = st.columns(3)
+            for index, (label, value) in enumerate(
+                workflow.r_multiple_distribution_summary(distribution)
+            ):
+                distribution_columns[index % 3].metric(label, value)
 
     # M9: read-only trade-to-fill audit trail. Each row pairs a completed trade
     # with the fills that produced it using the M8 linkage; nothing is re-derived

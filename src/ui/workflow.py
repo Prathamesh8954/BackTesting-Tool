@@ -19,6 +19,7 @@ from src.data_loader import load_market_data
 from src.data_validator import IssueDetail, ValidationReport, validate_market_data
 from src.execution.models import BacktestResult, Fill, FillKind, Trade
 from src.metrics import (
+    RMultipleDistribution,
     compute_drawdown_series,
     compute_metrics,
     compute_r_multiple_summary,
@@ -779,6 +780,62 @@ def performance_summary(result: BacktestResult) -> list[tuple[str, str]]:
             ]
         )
     return rows
+
+
+def _format_r_bin(lower: float, upper: float, *, is_last: bool) -> str:
+    """Labels an R-multiple bin, closing the final bin's upper edge.
+
+    Bins are half-open ``[lower, upper)`` except the last, which is closed
+    (``[lower, upper]``) so the distribution's top edge is always counted.
+    """
+    closing = "]" if is_last else ")"
+    return f"[{lower:.2f}, {upper:.2f}{closing}"
+
+
+def r_multiple_distribution_to_dataframe(
+    distribution: RMultipleDistribution,
+) -> pd.DataFrame:
+    """Display frame for the Milestone 45 R-multiple distribution (read-only).
+
+    One row per bin, labelled by :func:`_format_r_bin`, with the numeric edges
+    kept alongside so the exact boundaries stay inspectable. The columns are
+    preserved even when the distribution carries no bins. Edges and counts come
+    straight from the frozen ``RMultipleDistribution``; nothing is recomputed
+    here and the input is never mutated.
+    """
+    last_index = len(distribution.bins) - 1
+    rows = [
+        {
+            "bin": _format_r_bin(item.lower, item.upper, is_last=index == last_index),
+            "lower": item.lower,
+            "upper": item.upper,
+            "count": item.count,
+        }
+        for index, item in enumerate(distribution.bins)
+    ]
+    return pd.DataFrame(rows, columns=["bin", "lower", "upper", "count"])
+
+
+def r_multiple_distribution_summary(
+    distribution: RMultipleDistribution,
+) -> list[tuple[str, str]]:
+    """Ordered ``(label, value)`` rows for the out-of-bin R-multiple counts.
+
+    The three counts the histogram cannot hold — values below the first edge,
+    values above the last edge, and trades whose R-multiple is undefined — are
+    reported here rather than clamped into a bin. Each range label carries the
+    observed edge, so the reported interval is explicit. Read-only: the
+    distribution is only formatted, never recomputed.
+    """
+    lower = distribution.bins[0].lower if distribution.bins else None
+    upper = distribution.bins[-1].upper if distribution.bins else None
+    below = "" if lower is None else f" (< {lower:.2f})"
+    above = "" if upper is None else f" (> {upper:.2f})"
+    return [
+        (f"R-multiple below range{below}", str(distribution.below_range_count)),
+        (f"R-multiple above range{above}", str(distribution.above_range_count)),
+        ("R-multiple non-computable", str(distribution.non_computable_count)),
+    ]
 
 
 def drawdown_to_dataframe(result: BacktestResult) -> pd.DataFrame:

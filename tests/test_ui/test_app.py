@@ -152,7 +152,10 @@ def test_app_renders_trade_audit_trail_between_trades_and_fills(demo_raw_dir):
     assert not at.error
 
     headers = [subheader.value for subheader in at.subheader]
-    assert headers.index("Trades") + 1 == headers.index("Trade audit trail")
+    # M46: the R-multiple distribution sits between the Trades table and the
+    # audit trail, so the three sections now run in that order.
+    assert headers.index("Trades") + 1 == headers.index("R-multiple distribution")
+    assert headers.index("R-multiple distribution") + 1 == headers.index("Trade audit trail")
     assert headers.index("Trade audit trail") + 1 == headers.index("Fills")
 
     frames = [frame.value for frame in at.dataframe if isinstance(frame.value, pd.DataFrame)]
@@ -855,3 +858,95 @@ def test_app_open_position_fill_survives_bar_range(demo_raw_dir):
     # Lifecycle unchanged: still exactly one completed trade and one audit row.
     assert len(_trades_frame(at)) == 1
     assert len(_audit_frame(at)) == 1
+
+
+# ----------------------------------------------- R-multiple distribution (M46)
+# The Milestone 45 distribution is surfaced read-only as a range-labelled table
+# plus the three out-of-bin counts. Its scope is every completed trade in the run
+# (never the table filters), matching the unfiltered Mean R row in the M4 panel.
+
+DISTRIBUTION_METRIC_LABELS = (
+    "R-multiple below range (< -3.00)",
+    "R-multiple above range (> 3.00)",
+    "R-multiple non-computable",
+)
+
+
+def _distribution_frame(at) -> pd.DataFrame | None:
+    frames = [
+        frame.value
+        for frame in at.dataframe
+        if isinstance(frame.value, pd.DataFrame) and "bin" in frame.value.columns
+    ]
+    if not frames:
+        return None
+    assert len(frames) == 1, f"expected one distribution table, found {len(frames)}"
+    return frames[0]
+
+
+def test_app_renders_r_multiple_distribution_between_trades_and_audit(two_trade_raw_dir):
+    """M46: the distribution table and out-of-bin metrics render after Trades."""
+    at = _run_two_trades()
+
+    assert not at.exception
+    assert not at.error
+
+    headers = [subheader.value for subheader in at.subheader]
+    assert "R-multiple distribution" in headers
+    # D3: the section sits after the Trades table and before the audit trail.
+    assert headers.index("Trades") < headers.index("R-multiple distribution")
+    assert headers.index("R-multiple distribution") < headers.index("Trade audit trail")
+
+    # D2: an 8-row, range-labelled table built from the approved default edges.
+    distribution = _distribution_frame(at)
+    assert distribution is not None
+    assert list(distribution.columns) == ["bin", "lower", "upper", "count"]
+    assert len(distribution) == 8
+    assert distribution["bin"].iloc[0] == "[-3.00, -2.00)"
+    assert distribution["bin"].iloc[-1] == "[2.00, 3.00]"
+    # Both demo trades carry an initial stop, so both R-multiples are computable.
+    assert int(distribution["count"].sum()) == 2
+
+    # D5: the three out-of-bin counts are surfaced as labelled metrics.
+    labels = [metric.label for metric in at.metric]
+    for expected in DISTRIBUTION_METRIC_LABELS:
+        assert expected in labels, expected
+
+
+def test_app_r_multiple_distribution_ignores_trade_filters(two_trade_raw_dir):
+    """D1: filtering the Trades table never changes the distribution's scope."""
+    at = _run_two_trades()
+
+    before = _distribution_frame(at)
+    assert before is not None
+    assert int(before["count"].sum()) == 2
+
+    # Drop the SHORT trade from the visible table...
+    _multiselect(at, "Filter trades by direction").set_value(["SHORT"])
+    at.run()
+
+    assert not at.exception
+    assert len(_trades_frame(at)) == 1
+    # ...but the distribution still covers every completed trade.
+    after = _distribution_frame(at)
+    assert after is not None
+    pd.testing.assert_frame_equal(before, after)
+
+
+def test_app_r_multiple_distribution_empty_state(demo_raw_dir):
+    """D4: no completed trades shows a notice, never a zero-filled table."""
+    at = _run_demo(
+        streamlit_testing.AppTest.from_file(APP_PATH, default_timeout=30).run(),
+        OPEN_POSITION_STRATEGY,
+    )
+
+    assert not at.exception
+    assert not at.error
+
+    headers = [subheader.value for subheader in at.subheader]
+    assert "R-multiple distribution" in headers
+    # No distribution table and no out-of-bin metrics are rendered.
+    assert _distribution_frame(at) is None
+    assert any(info.value == "No completed trades." for info in at.info)
+    labels = [metric.label for metric in at.metric]
+    assert not [label for label in labels if label in DISTRIBUTION_METRIC_LABELS]
