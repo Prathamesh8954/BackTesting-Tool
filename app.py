@@ -156,6 +156,7 @@ def _render_results(result) -> None:
             (
                 ("direction", "Filter trades by direction"),
                 ("exit_kind", "Filter trades by exit kind"),
+                ("tag", "Filter trades by tag"),
             ),
             "trades_filter",
         )
@@ -193,6 +194,7 @@ def _render_results(result) -> None:
         audit_criteria = {
             "direction": trade_criteria.get("direction", []),
             "exit_fill_kind": trade_criteria.get("exit_kind", []),
+            "entry_fill_tag": trade_criteria.get("tag", []),
         }
         _render_filtered_table(
             audit,
@@ -214,6 +216,7 @@ def _render_results(result) -> None:
             (
                 ("kind", "Filter fills by kind"),
                 ("direction", "Filter fills by direction"),
+                ("tag", "Filter fills by tag"),
             ),
             "fills_filter",
         )
@@ -230,7 +233,10 @@ def _render_results(result) -> None:
     else:
         rejection_criteria = _render_filter_widgets(
             rejections,
-            (("reason", "Filter rejections by reason"),),
+            (
+                ("reason", "Filter rejections by reason"),
+                ("tag", "Filter rejections by tag"),
+            ),
             "rejections_filter",
         )
         _render_filtered_table(

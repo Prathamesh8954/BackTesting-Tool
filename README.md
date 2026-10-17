@@ -163,7 +163,7 @@ The workflow guides you through:
 2. **Validate** the data, with clear messages for missing columns, invalid values, or other failures.
 3. **Review** the loaded data state (source, number of rows, available time range, and columns).
 4. **Configure** the backtest (initial capital, risk model, quantity step, commission, and slippage).
-5. **Run** the strategy and inspect the results, including the accounting summary, the performance metrics panel, the equity curve, the per-bar drawdown chart, the trade audit trail, trades, fills, and rejected decisions. The trades, trade audit trail, fills, and rejected-decisions tables can each be narrowed with read-only filters (see Milestones 34 and 36 in Section 5).
+5. **Run** the strategy and inspect the results, including the accounting summary, the performance metrics panel, the equity curve, the per-bar drawdown chart, the trade audit trail, trades, fills, and rejected decisions. The trades, trade audit trail, fills, and rejected-decisions tables can each be narrowed with read-only filters (see Milestones 34, 36 and 43 in Section 5).
 
 > Note: This is an initial workflow. The full interactive dashboard and the remaining planned milestones are not yet complete.
 
@@ -171,7 +171,7 @@ The workflow guides you through:
 
 ## 5. Current vs. Future Milestone Capabilities
 
-### Currently Implemented (Milestones 1, 2, 3, 4, 5, 7, 8, 9, 10, 13, 25, 34 & 36)
+### Currently Implemented (Milestones 1, 2, 3, 4, 5, 7, 8, 9, 10, 13, 25, 34, 36 & 43)
 * **Read-Only Ingestion**: CSV and Parquet files loaded without modifying disk files.
 * **Non-Mutating Validation**: Comprehensive OHLC invariant checks, non-numeric checks, and separation of fatal errors from warnings.
 * **Strategy Interface**: Universal `Strategy.on_bar(context)` lifecycle supporting stateful strategies.
@@ -187,6 +187,7 @@ The workflow guides you through:
 * **R-Multiple Analytics (Milestone 13)**: A pure, read-only helper computes each completed trade's $R$-multiple as `R = net_pnl / (quantity * abs(entry_price - initial_stop))`, where the initial stop is captured at entry (before any later protection modification) and recorded on the trade as `Trade.initial_stop`. A companion summary reports the mean $R$ across computable trades plus the computable/non-computable counts. Undefined results are `None`, never `0`. The metric is a library API; the Milestone 13 commit itself changed no performance report, dashboard column, or audit-trail behaviour.
 * **R-Multiple UI Integration (Milestone 25)**: The Streamlit results view surfaces the Milestone 13 metric read-only — an `r_multiple` column on the Trades table, and `Mean R` plus computable/non-computable counts in the performance-metrics panel, taken directly from the Milestone 13 helper. An undefined mean is rendered as `n/a`, never `0`; the performance report, the execution records, and the audit trail are unchanged.
 * **Read-Only Results Filtering (Milestones 34 & 36)**: The Streamlit results view adds read-only multiselect filters that narrow four tables — the Trades table (by `direction` and `exit_kind`), the trade audit trail (sharing the trade filters via the Milestone 9 exit-kind mapping), the Fills table (by `kind` and `direction`), and the Rejections table (by `reason`). Filtering only narrows the displayed tables; it never changes backtest execution or the underlying results. The reusable `filter_rows` helper lives in `src/ui/workflow.py`, and Milestone 36 added two regression tests.
+* **Read-Only Tag Filtering (Milestone 43)**: Tag-based read-only filtering across the same four results tables. The Trades table now displays the existing `Trade.tag` value and offers a tag filter; the trade audit trail shares that Trades tag selection, mapped through its canonical `entry_fill_tag` column (no independent entry- or exit-tag controls exist); and the Fills and Rejections tables each add their own tag filter over their existing tag data. Clearing a tag selection removes only that restriction while other active filters remain in effect, and an empty tag selection imposes no tag restriction. The M43 change is display-only: it never mutates backtest results, persisted state, or the engine. `filter_rows` also continues to ignore unknown filter columns safely.
 
 ### Partially Implemented
 * **User Interface (Milestone 6)**: An initial Streamlit chart-data-to-backtest workflow (see Section 4). Its broader scope has no defined specification (the trade audit-trail slice is covered by Milestones 8 and 9, and the read-only results-filtering slice by Milestones 34 and 36); completing the wider interactive audit dashboard requires a supervisor decision.
@@ -204,4 +205,4 @@ Run the full automated test suite inside the virtual environment:
 .\.venv\Scripts\python.exe -m pytest tests -v
 ```
 
-Currently **320 tests** pass, of which **107** are the UI tests in `tests/test_ui/` (verified during the Milestone 41 documentation reconciliation).
+Currently **325 tests** pass, of which **112** are the UI tests in `tests/test_ui/` (verified during the Milestone 43 documentation reconciliation).

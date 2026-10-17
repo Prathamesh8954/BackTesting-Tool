@@ -799,3 +799,17 @@ def test_filter_rows_on_empty_frame_is_safe():
 
     assert result.empty
     assert list(result.columns) == list(frame.columns)
+
+
+def test_trades_to_dataframe_includes_tag_column():
+    result = three_trade_result()
+    trades = workflow.trades_to_dataframe(result)
+    assert "tag" in trades.columns
+    assert list(trades["tag"]) == ["" for _ in range(len(trades))]
+
+
+def test_filter_rows_unknown_column_continues_to_be_safe():
+    frame = _filter_frame()
+    result = workflow.filter_rows(frame, {"direction": ["LONG"], "nonexistent_col": ["X"]})
+    assert list(result["value"]) == [1, 3]
+    pd.testing.assert_frame_equal(frame, _filter_frame())  # input not mutated

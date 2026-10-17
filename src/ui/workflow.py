@@ -535,6 +535,7 @@ def trades_to_dataframe(result: BacktestResult) -> pd.DataFrame:
                 "r_multiple": trade_r_multiple(trade),
                 "entry_commission": trade.entry_commission,
                 "exit_commission": trade.exit_commission,
+                "tag": trade.tag,
             }
             for trade in result.trades
         ]

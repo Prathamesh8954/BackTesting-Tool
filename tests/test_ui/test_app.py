@@ -508,6 +508,19 @@ class TwoRejections(Strategy):
 '''
 
 
+TAGGED_REJECTION_STRATEGY = '''
+class TaggedRejections(Strategy):
+    def on_bar(self, context):
+        if context.current_index == 0:
+            return [StrategyDecision(action=OrderAction.EXIT, tag="R1")]
+        if context.current_index == 1:
+            return [StrategyDecision(action=OrderAction.ENTER_LONG, stop_loss=90.0)]
+        if context.current_index == 2:
+            return [StrategyDecision(action=OrderAction.ENTER_LONG, stop_loss=90.0, tag="R2")]
+        return []
+'''
+
+
 def test_app_rejection_reason_filter_excludes_non_matching_rows(demo_raw_dir):
     """M36 (S3): selecting a reason narrows the Rejections table (2 -> 1).
 
@@ -538,3 +551,120 @@ def test_app_rejection_reason_filter_excludes_non_matching_rows(demo_raw_dir):
     ]
     assert len(rejections) == 1
     assert list(rejections[0]["reason"]) == ["EXIT_WHILE_FLAT"]
+
+
+def test_app_rejection_tag_filter_narrows_rejections_rows(demo_raw_dir):
+    """M43: selecting a tag narrows the Rejections table by its tag column.
+
+    Two rejections carry different tags (``R1`` on the EXIT_WHILE_FLAT, ``R2``
+    on the ENTRY_WHILE_OPEN), so selecting one must exclude the other row.
+    """
+    at = _run_demo(
+        streamlit_testing.AppTest.from_file(APP_PATH, default_timeout=30).run(),
+        TAGGED_REJECTION_STRATEGY,
+    )
+
+    assert not at.exception
+    assert not at.error
+
+    widget = _multiselect(at, "Filter rejections by tag")
+    assert widget.options == ["R1", "R2"]
+
+    widget.set_value(["R1"])
+    at.run()
+
+    assert not at.exception
+    rejections = [
+        frame.value
+        for frame in at.dataframe
+        if isinstance(frame.value, pd.DataFrame) and "reason" in frame.value.columns
+    ]
+    assert len(rejections) == 1
+    assert list(rejections[0]["tag"]) == ["R1"]
+    assert list(rejections[0]["reason"]) == ["EXIT_WHILE_FLAT"]
+
+    # Clearing the tag filter restores both rows (reason filter still unset).
+    _multiselect(at, "Filter rejections by tag").set_value([])
+    at.run()
+    rejections = [
+        frame.value
+        for frame in at.dataframe
+        if isinstance(frame.value, pd.DataFrame) and "reason" in frame.value.columns
+    ]
+    assert len(rejections) == 1
+    assert sorted(rejections[0]["tag"]) == ["R1", "R2"]
+
+
+TAG_STRATEGY = '''
+class TaggedTrades(Strategy):
+    def on_bar(self, context):
+        if context.current_index == 0:
+            return [StrategyDecision(action=OrderAction.ENTER_LONG, stop_loss=90.0, tag="A")]
+        if context.current_index == 1:
+            return [StrategyDecision(action=OrderAction.EXIT, tag="X")]
+        if context.current_index == 2:
+            return [StrategyDecision(action=OrderAction.ENTER_SHORT, stop_loss=110.0, tag="B")]
+        if context.current_index == 3:
+            return [StrategyDecision(action=OrderAction.EXIT)]
+        return []
+'''
+
+
+def test_app_tag_filtering_and_shared_audit_mapping(two_trade_raw_dir):
+    """M43: tag filter narrows Trades, audit (via entry_fill_tag), Fills."""
+    at = _run_demo(
+        streamlit_testing.AppTest.from_file(APP_PATH, default_timeout=30).run(),
+        TAG_STRATEGY,
+    )
+    assert not at.exception
+    tag_widget = _multiselect(at, "Filter trades by tag")
+    assert set(tag_widget.options) >= {"A", "B"}
+    tag_widget.set_value(["A"])
+    at.run()
+    assert not at.exception
+    trades = _trades_frame(at)
+    assert len(trades) == 1 and list(trades["tag"]) == ["A"]
+    audits = [
+        frame.value
+        for frame in at.dataframe
+        if isinstance(frame.value, pd.DataFrame) and "exit_fill_kind" in frame.value.columns
+    ]
+    assert len(audits) == 1 and list(audits[0]["entry_fill_tag"]) == ["A"]
+    # Fills tag filtering narrows the fills table without touching trades.
+    fill_tag = _multiselect(at, "Filter fills by tag")
+    assert set(fill_tag.options) >= {"A", "B", "X"}
+    fill_tag.set_value(["A"])
+    at.run()
+    fills_frames = [
+        frame.value
+        for frame in at.dataframe
+        if isinstance(frame.value, pd.DataFrame) and "linkage" in frame.value.columns
+    ]
+    assert len(fills_frames) == 1
+    assert list(fills_frames[0]["tag"]) == ["A"]
+    # Trades keep their own (still active) tag filter: exactly the tag-A trade.
+    assert len(_trades_frame(at)) == 1
+    _multiselect(at, "Filter fills by tag").set_value([])
+    at.run()
+    # Re-fetch after run: widget references go stale once the app reruns.
+    _multiselect(at, "Filter trades by tag").set_value([])
+    at.run()
+    trades_all = _trades_frame(at)
+    assert len(trades_all) == 2
+    assert sorted(trades_all["tag"]) == ["A", "B"]
+
+
+def test_app_tag_filter_clearing_preserves_other_filters(two_trade_raw_dir):
+    at = _run_demo(
+        streamlit_testing.AppTest.from_file(APP_PATH, default_timeout=30).run(),
+        TAG_STRATEGY,
+    )
+    _multiselect(at, "Filter trades by direction").set_value(["SHORT"])
+    _multiselect(at, "Filter trades by tag").set_value(["B"])
+    at.run()
+    combined = _trades_frame(at)
+    assert len(combined) == 1 and list(combined["tag"]) == ["B"]
+    _multiselect(at, "Filter trades by tag").set_value([])
+    at.run()
+    trades = _trades_frame(at)
+    assert len(trades) == 1 and list(trades["direction"]) == ["SHORT"]  # tag cleared, direction still active
