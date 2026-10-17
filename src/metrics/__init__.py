@@ -18,22 +18,32 @@ from src.metrics.metrics import (
     compute_metrics,
 )
 from src.metrics.r_multiple import (
+    DEFAULT_R_BIN_EDGES,
+    RMultipleBin,
+    RMultipleDistribution,
+    RMultipleDistributionError,
     RMultipleSummary,
+    compute_r_multiple_distribution,
     compute_r_multiple_summary,
     trade_r_multiple,
 )
 
 __all__ = [
+    "DEFAULT_R_BIN_EDGES",
     "DrawdownPoint",
     "DrawdownResult",
     "DrawdownSeries",
     "MetricsConsistencyError",
     "OpenPositionSummary",
     "PerformanceReport",
+    "RMultipleBin",
+    "RMultipleDistribution",
+    "RMultipleDistributionError",
     "RMultipleSummary",
     "compute_drawdown",
     "compute_drawdown_series",
     "compute_metrics",
+    "compute_r_multiple_distribution",
     "compute_r_multiple_summary",
     "trade_r_multiple",
 ]
