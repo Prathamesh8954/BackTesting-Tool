@@ -668,3 +668,190 @@ def test_app_tag_filter_clearing_preserves_other_filters(two_trade_raw_dir):
     at.run()
     trades = _trades_frame(at)
     assert len(trades) == 1 and list(trades["direction"]) == ["SHORT"]  # tag cleared, direction still active
+
+
+# --------------------------------------------- bar-range filtering tests (M44)
+
+def _slider(at, label: str):
+    matches = [widget for widget in at.slider if widget.label == label]
+    assert len(matches) == 1, f"expected exactly one {label!r} slider, found {len(matches)}"
+    return matches[0]
+
+
+def _audit_frame(at) -> pd.DataFrame:
+    frames = [
+        frame.value
+        for frame in at.dataframe
+        if isinstance(frame.value, pd.DataFrame) and "entry_fill_bar" in frame.value.columns
+    ]
+    assert len(frames) == 1, f"expected one audit table, found {len(frames)}"
+    return frames[0]
+
+
+def _fills_frame(at) -> pd.DataFrame:
+    frames = [
+        frame.value
+        for frame in at.dataframe
+        if isinstance(frame.value, pd.DataFrame) and "linkage" in frame.value.columns
+    ]
+    assert len(frames) == 1, f"expected one fills table, found {len(frames)}"
+    return frames[0]
+
+
+def _rejections_frame(at) -> pd.DataFrame:
+    frames = [
+        frame.value
+        for frame in at.dataframe
+        if isinstance(frame.value, pd.DataFrame) and "reason" in frame.value.columns
+    ]
+    assert len(frames) == 1, f"expected one rejections table, found {len(frames)}"
+    return frames[0]
+
+
+def test_app_trades_bar_range_narrows_trades_and_audit(two_trade_raw_dir):
+    """M44: the Trades entry-bar range narrows Trades and the audit trail together.
+
+    The audit follows through its own ``entry_fill_bar`` column (the entry fill
+    sits on the entry bar), so the remapped range must exclude the same trade.
+    """
+    at = _run_two_trades()
+
+    assert not at.exception
+    assert not at.error
+    assert len(_trades_frame(at)) == 2
+    assert len(_audit_frame(at)) == 2
+
+    # entry_bar domain is (1, 3): the later trade entered on bar 3.
+    _slider(at, "Filter trades by entry bar").set_range(3, 3)
+    at.run()
+
+    assert not at.exception
+    trades = _trades_frame(at)
+    assert list(trades["entry_bar"]) == [3]
+    audit = _audit_frame(at)
+    assert list(audit["entry_fill_bar"]) == [3]
+    assert list(audit["direction"]) == ["SHORT"]
+
+
+def test_app_trades_bar_range_full_selection_is_noop(two_trade_raw_dir):
+    """M44: selecting the whole observed domain leaves both views unfiltered."""
+    at = _run_two_trades()
+
+    slider = _slider(at, "Filter trades by entry bar")
+    assert tuple(slider.value) == (1, 3)  # default minimum-to-maximum
+
+    slider.set_range(1, 3)
+    at.run()
+
+    assert not at.exception
+    assert len(_trades_frame(at)) == 2
+    assert len(_audit_frame(at)) == 2
+
+
+def test_app_trades_bar_range_intersects_with_categorical_filter(two_trade_raw_dir):
+    """M44: the range intersects the direction filter instead of bypassing it."""
+    at = _run_two_trades()
+
+    _multiselect(at, "Filter trades by direction").set_value(["SHORT"])
+    _slider(at, "Filter trades by entry bar").set_range(1, 1)
+    at.run()
+
+    assert not at.exception
+    # SHORT enters on bar 3, so the bar<=1 range excludes it: no rows survive.
+    assert not any(
+        isinstance(frame.value, pd.DataFrame) and "entry_bar" in frame.value.columns
+        for frame in at.dataframe
+    )
+    notices = [info.value for info in at.info]
+    assert "No trades match the selected filters." in notices
+
+
+def test_app_fills_bar_range_is_independent_of_trades(two_trade_raw_dir):
+    """M44: the fills range filters fills only; Trades and audit stay whole."""
+    at = _run_two_trades()
+
+    # fills bar domain is (1, 4): keep the two fills of the first trade.
+    _slider(at, "Filter fills by bar").set_range(1, 2)
+    at.run()
+
+    assert not at.exception
+    fills = _fills_frame(at)
+    assert list(fills["bar"]) == [1, 2]
+    assert len(_trades_frame(at)) == 2
+    assert len(_audit_frame(at)) == 2
+
+
+def test_app_rejections_bar_range_is_independent(demo_raw_dir):
+    """M44: the Rejections range filters on the rejection's own ``bar`` column."""
+    at = _run_demo(
+        streamlit_testing.AppTest.from_file(APP_PATH, default_timeout=30).run(),
+        TWO_REJECTION_STRATEGY,
+    )
+
+    assert not at.exception
+    assert list(_rejections_frame(at)["bar"]) == [0, 2]
+
+    _slider(at, "Filter rejections by bar").set_range(2, 2)
+    at.run()
+
+    assert not at.exception
+    rejections = _rejections_frame(at)
+    assert list(rejections["bar"]) == [2]
+    assert list(rejections["reason"]) == ["ENTRY_WHILE_OPEN"]
+
+
+def test_app_single_bar_domain_renders_no_range_slider(demo_raw_dir):
+    """M44: a one-value bar column yields a valid no-op, never a zero-width slider."""
+    at = _run_demo(
+        streamlit_testing.AppTest.from_file(APP_PATH, default_timeout=30).run(),
+        OPEN_POSITION_STRATEGY,
+    )
+
+    assert not at.exception
+    # The only fill sits on one bar, so no fills range slider is offered...
+    assert not [widget for widget in at.slider if widget.label == "Filter fills by bar"]
+    # ...and the open-position entry still renders, with no completed trades.
+    assert list(_fills_frame(at)["bar"]) == [1]
+    assert any(info.value == "No completed trades." for info in at.info)
+
+
+OPEN_AFTER_TRADE_STRATEGY = '''
+class OpenAfterTrade(Strategy):
+    def on_bar(self, context):
+        if context.current_index == 0:
+            return [StrategyDecision(action=OrderAction.ENTER_LONG, stop_loss=90.0)]
+        if context.current_index == 1:
+            return [StrategyDecision(action=OrderAction.EXIT)]
+        if context.current_index == 2:
+            return [StrategyDecision(action=OrderAction.ENTER_LONG, stop_loss=90.0)]
+        return []
+'''
+
+
+def test_app_open_position_fill_survives_bar_range(demo_raw_dir):
+    """M44: the range applies to Fills only; an open position is unchanged.
+
+    The trailing ENTRY fill of the position left open at the end of the data is a
+    fill like any other, so it is range-filterable while the lifecycle rule (no
+    completed-trade or audit row for it) is preserved.
+    """
+    at = _run_demo(
+        streamlit_testing.AppTest.from_file(APP_PATH, default_timeout=30).run(),
+        OPEN_AFTER_TRADE_STRATEGY,
+    )
+
+    assert not at.exception
+    assert list(_fills_frame(at)["bar"]) == [1, 2, 3]
+    assert len(_trades_frame(at)) == 1
+    assert len(_audit_frame(at)) == 1
+
+    _slider(at, "Filter fills by bar").set_range(3, 3)
+    at.run()
+
+    assert not at.exception
+    narrowed = _fills_frame(at)
+    assert list(narrowed["bar"]) == [3]
+    assert list(narrowed["linkage"]) == [workflow.OPEN_POSITION_ENTRY_LINKAGE]
+    # Lifecycle unchanged: still exactly one completed trade and one audit row.
+    assert len(_trades_frame(at)) == 1
+    assert len(_audit_frame(at)) == 1

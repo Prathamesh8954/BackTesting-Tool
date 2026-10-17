@@ -171,7 +171,7 @@ The workflow guides you through:
 
 ## 5. Current vs. Future Milestone Capabilities
 
-### Currently Implemented (Milestones 1, 2, 3, 4, 5, 7, 8, 9, 10, 13, 25, 34, 36 & 43)
+### Currently Implemented (Milestones 1, 2, 3, 4, 5, 7, 8, 9, 10, 13, 25, 34, 36, 43 & 44)
 * **Read-Only Ingestion**: CSV and Parquet files loaded without modifying disk files.
 * **Non-Mutating Validation**: Comprehensive OHLC invariant checks, non-numeric checks, and separation of fatal errors from warnings.
 * **Strategy Interface**: Universal `Strategy.on_bar(context)` lifecycle supporting stateful strategies.
@@ -188,6 +188,7 @@ The workflow guides you through:
 * **R-Multiple UI Integration (Milestone 25)**: The Streamlit results view surfaces the Milestone 13 metric read-only — an `r_multiple` column on the Trades table, and `Mean R` plus computable/non-computable counts in the performance-metrics panel, taken directly from the Milestone 13 helper. An undefined mean is rendered as `n/a`, never `0`; the performance report, the execution records, and the audit trail are unchanged.
 * **Read-Only Results Filtering (Milestones 34 & 36)**: The Streamlit results view adds read-only multiselect filters that narrow four tables — the Trades table (by `direction` and `exit_kind`), the trade audit trail (sharing the trade filters via the Milestone 9 exit-kind mapping), the Fills table (by `kind` and `direction`), and the Rejections table (by `reason`). Filtering only narrows the displayed tables; it never changes backtest execution or the underlying results. The reusable `filter_rows` helper lives in `src/ui/workflow.py`, and Milestone 36 added two regression tests.
 * **Read-Only Tag Filtering (Milestone 43)**: Tag-based read-only filtering across the same four results tables. The Trades table now displays the existing `Trade.tag` value and offers a tag filter; the trade audit trail shares that Trades tag selection, mapped through its canonical `entry_fill_tag` column (no independent entry- or exit-tag controls exist); and the Fills and Rejections tables each add their own tag filter over their existing tag data. Clearing a tag selection removes only that restriction while other active filters remain in effect, and an empty tag selection imposes no tag restriction. The M43 change is display-only: it never mutates backtest results, persisted state, or the engine. `filter_rows` also continues to ignore unknown filter columns safely.
+* **Read-Only Bar-Range Filtering (Milestone 44)**: Inclusive bar-index range filters over the same four results tables, each rendered as a slider spanning that table's observed bar values. The Trades table filters by `entry_bar`, and the trade audit trail shares that same Trades selection through its own `entry_fill_bar` column; the Fills and Rejections tables each gain an independent range over their own `bar` column. Both bounds are inclusive, the default minimum-to-maximum selection is an exact no-op (it also leaves rows whose bar value is missing untouched), and a range intersects the existing direction/kind/reason/tag filters rather than replacing them — the reusable `filter_rows_by_range` helper in `src/ui/workflow.py` is composed after `filter_rows`. Filtering only narrows the displayed rows; it never changes backtest execution, results, or persisted state. A bar column holding a single distinct value renders no range slider (a valid no-op) rather than an invalid zero-width one, and a restricted range excludes missing or non-numeric bar values without ever rewriting them to a different bar index. Bar indices are the 0-based positions in the loaded dataset; no timestamp-based range filtering exists.
 
 ### Partially Implemented
 * **User Interface (Milestone 6)**: An initial Streamlit chart-data-to-backtest workflow (see Section 4). Its broader scope has no defined specification (the trade audit-trail slice is covered by Milestones 8 and 9, and the read-only results-filtering slice by Milestones 34 and 36); completing the wider interactive audit dashboard requires a supervisor decision.
@@ -205,4 +206,4 @@ Run the full automated test suite inside the virtual environment:
 .\.venv\Scripts\python.exe -m pytest tests -v
 ```
 
-Currently **325 tests** pass, of which **112** are the UI tests in `tests/test_ui/` (verified during the Milestone 43 documentation reconciliation).
+Currently **342 tests** pass, of which **129** are the UI tests in `tests/test_ui/` (verified during the Milestone 44 documentation reconciliation).

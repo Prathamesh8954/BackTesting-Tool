@@ -847,3 +847,55 @@ def filter_rows(
             continue
         filtered = filtered.loc[filtered[column].isin(allowed_values)]
     return filtered.copy()
+
+
+def filter_rows_by_range(
+    frame: pd.DataFrame,
+    column: str,
+    low: Optional[int] = None,
+    high: Optional[int] = None,
+) -> pd.DataFrame:
+    """Returns a copy of ``frame`` keeping the rows whose ``column`` is in range.
+
+    The range is the inclusive bar-index interval ``low <= value <= high``. It is
+    designed to be composed *after* :func:`filter_rows`, so a range selection
+    intersects with the categorical/tag filters instead of replacing them.
+
+    The rules mirror :func:`filter_rows` and are deliberately total:
+
+    * A bound of ``None`` is unrestricted on that side.
+    * A bound that does not tighten the column's observed numeric domain (``low``
+      at or below the minimum, ``high`` at or above the maximum) is also treated
+      as unrestricted. The UI's default minimum-to-maximum selection is therefore
+      an exact no-op and never drops rows whose bar value is missing.
+    * A column that ``frame`` does not have, an empty frame, or a column with no
+      usable numeric values imposes no restriction, so the helper can never raise
+      on an unexpected table shape.
+    * Under a restricted side, values that are missing or non-numeric do not
+      satisfy the comparison and are excluded. A non-numeric value is coerced
+      only for the comparison; it is never rewritten to a different bar index.
+
+    Read-only and deterministic, like the other ``src.ui.workflow`` helpers: the
+    input is never mutated, the result preserves the input column order and the
+    relative order of the surviving rows, and an empty match is an empty frame
+    that still carries the input columns.
+    """
+    filtered = frame.copy()
+    if column not in filtered.columns:
+        return filtered
+    values = pd.to_numeric(filtered[column], errors="coerce")
+    present = values.dropna()
+    if present.empty:
+        return filtered
+    if low is None or low <= present.min():
+        low = None
+    if high is None or high >= present.max():
+        high = None
+    if low is None and high is None:
+        return filtered
+    mask = pd.Series(True, index=filtered.index)
+    if low is not None:
+        mask &= values >= low
+    if high is not None:
+        mask &= values <= high
+    return filtered.loc[mask].copy()

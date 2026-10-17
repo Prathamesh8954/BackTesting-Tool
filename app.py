@@ -92,13 +92,50 @@ def _render_filter_widgets(
     return selections
 
 
+def _render_bar_range_filter(
+    frame: pd.DataFrame,
+    column: str,
+    label: str,
+    key: str,
+) -> tuple[int, int] | None:
+    """Renders an inclusive bar-index range slider and returns its selection.
+
+    The slider spans the column's observed numeric domain, so its default
+    minimum-to-maximum position is a full range that reproduces the unfiltered
+    table. ``None`` is returned when no usable domain exists — a missing column,
+    an empty frame, or a single distinct value — which the caller treats as "no
+    restriction"; :func:`workflow.filter_rows_by_range` honours that as a no-op,
+    so no invalid (zero-width) slider is ever configured.
+    """
+    if column not in frame.columns:
+        return None
+    values = pd.to_numeric(frame[column], errors="coerce").dropna()
+    if values.empty:
+        return None
+    low = int(values.min())
+    high = int(values.max())
+    if low >= high:
+        return None
+    selection = st.slider(label, min_value=low, max_value=high, value=(low, high), key=key)
+    return (int(selection[0]), int(selection[1]))
+
+
 def _render_filtered_table(
     frame: pd.DataFrame,
     criteria: dict[str, list[str]],
     empty_message: str,
+    bar_range: tuple[str, int, int] | None = None,
 ) -> None:
-    """Renders ``frame`` through :func:`workflow.filter_rows`, or an empty notice."""
+    """Renders ``frame`` through :func:`workflow.filter_rows` and an optional range.
+
+    ``bar_range`` is an ``(column, low, high)`` inclusive bar-index interval
+    applied on top of the categorical ``criteria``, so the two filters intersect.
+    An empty result (before or after filtering) is reported with ``empty_message``.
+    """
     filtered = workflow.filter_rows(frame, criteria)
+    if bar_range is not None:
+        column, low, high = bar_range
+        filtered = workflow.filter_rows_by_range(filtered, column, low, high)
     if filtered.empty:
         st.info(empty_message)
     else:
@@ -146,6 +183,7 @@ def _render_results(result) -> None:
     st.subheader("Trades")
     trades = workflow.trades_to_dataframe(result)
     trade_criteria: dict[str, list[str]] = {}
+    trades_range: tuple[int, int] | None = None
     if trades.empty:
         st.info("No completed trades.")
     else:
@@ -160,10 +198,19 @@ def _render_results(result) -> None:
             ),
             "trades_filter",
         )
+        # M44: an inclusive entry-bar range that intersects the filters above and
+        # is shared with the audit trail below (mapped to its entry fill bar).
+        trades_range = _render_bar_range_filter(
+            trades,
+            "entry_bar",
+            "Filter trades by entry bar",
+            "trades_filter:entry_bar",
+        )
         _render_filtered_table(
             trades,
             trade_criteria,
             "No trades match the selected filters.",
+            bar_range=None if trades_range is None else ("entry_bar", *trades_range),
         )
 
     # M9: read-only trade-to-fill audit trail. Each row pairs a completed trade
@@ -191,6 +238,8 @@ def _render_results(result) -> None:
     else:
         # M34: the audit trail shares the trade filters (its closing-fill kind
         # column is named ``exit_fill_kind``), so the two views stay consistent.
+        # M44: it also shares the trades entry-bar range, remapped to the audit's
+        # ``entry_fill_bar`` column (the entry fill sits on the entry bar).
         audit_criteria = {
             "direction": trade_criteria.get("direction", []),
             "exit_fill_kind": trade_criteria.get("exit_kind", []),
@@ -200,6 +249,9 @@ def _render_results(result) -> None:
             audit,
             audit_criteria,
             "No trades match the selected filters.",
+            bar_range=None
+            if trades_range is None
+            else ("entry_fill_bar", *trades_range),
         )
 
     st.subheader("Fills")
@@ -220,10 +272,18 @@ def _render_results(result) -> None:
             ),
             "fills_filter",
         )
+        # M44: an independent fills range over the fill's own ``bar`` column.
+        fills_range = _render_bar_range_filter(
+            fills,
+            "bar",
+            "Filter fills by bar",
+            "fills_filter:bar",
+        )
         _render_filtered_table(
             fills,
             fill_criteria,
             "No fills match the selected filters.",
+            bar_range=None if fills_range is None else ("bar", *fills_range),
         )
 
     st.subheader("Rejections")
@@ -239,10 +299,20 @@ def _render_results(result) -> None:
             ),
             "rejections_filter",
         )
+        # M44: an independent rejections range over the rejection's ``bar``.
+        rejections_range = _render_bar_range_filter(
+            rejections,
+            "bar",
+            "Filter rejections by bar",
+            "rejections_filter:bar",
+        )
         _render_filtered_table(
             rejections,
             rejection_criteria,
             "No rejections match the selected filters.",
+            bar_range=None
+            if rejections_range is None
+            else ("bar", *rejections_range),
         )
 
     if result.unfilled_orders:

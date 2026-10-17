@@ -813,3 +813,106 @@ def test_filter_rows_unknown_column_continues_to_be_safe():
     result = workflow.filter_rows(frame, {"direction": ["LONG"], "nonexistent_col": ["X"]})
     assert list(result["value"]) == [1, 3]
     pd.testing.assert_frame_equal(frame, _filter_frame())  # input not mutated
+
+
+# --------------------------------------------- bar-range filtering tests (M44)
+
+def _bar_frame() -> pd.DataFrame:
+    """Three usable bars plus one missing value, kept distinct by ``value``."""
+    return pd.DataFrame(
+        {
+            "entry_bar": [0, 1, 2, 3, None],
+            "value": ["a", "b", "c", "d", "e"],
+        }
+    )
+
+
+def test_filter_rows_by_range_includes_both_bounds():
+    result = workflow.filter_rows_by_range(_bar_frame(), "entry_bar", 1, 2)
+
+    assert list(result["value"]) == ["b", "c"]
+
+
+def test_filter_rows_by_range_accepts_a_single_bar():
+    result = workflow.filter_rows_by_range(_bar_frame(), "entry_bar", 2, 2)
+
+    assert list(result["value"]) == ["c"]
+
+
+def test_filter_rows_by_range_full_selection_is_noop_and_keeps_missing():
+    frame = _bar_frame()
+
+    result = workflow.filter_rows_by_range(frame, "entry_bar", 0, 3)
+
+    # The whole observed domain is a full range: every row survives, including
+    # the one whose bar value is missing.
+    pd.testing.assert_frame_equal(result, frame)
+    assert result["entry_bar"].isna().sum() == 1
+
+
+def test_filter_rows_by_range_missing_bound_is_unrestricted():
+    frame = _bar_frame()
+
+    only_high = workflow.filter_rows_by_range(frame, "entry_bar", None, 1)
+    only_low = workflow.filter_rows_by_range(frame, "entry_bar", 2, None)
+
+    assert list(only_high["value"]) == ["a", "b"]
+    assert list(only_low["value"]) == ["c", "d"]
+
+
+def test_filter_rows_by_range_no_match_returns_empty_frame_with_columns():
+    frame = _bar_frame()
+
+    result = workflow.filter_rows_by_range(frame, "entry_bar", 10, 20)
+
+    assert result.empty
+    assert list(result.columns) == list(frame.columns)
+
+
+def test_filter_rows_by_range_unknown_column_imposes_no_restriction():
+    frame = _bar_frame()
+
+    result = workflow.filter_rows_by_range(frame, "nonexistent_col", 1, 2)
+
+    pd.testing.assert_frame_equal(result, frame)
+
+
+def test_filter_rows_by_range_on_empty_frame_is_safe():
+    frame = _bar_frame().iloc[0:0]
+
+    result = workflow.filter_rows_by_range(frame, "entry_bar", 1, 2)
+
+    assert result.empty
+    assert list(result.columns) == list(frame.columns)
+
+
+def test_filter_rows_by_range_does_not_mutate_or_reorder():
+    frame = _bar_frame()
+    original = _bar_frame()
+
+    result = workflow.filter_rows_by_range(frame, "entry_bar", 1, 3)
+
+    assert list(result["value"]) == ["b", "c", "d"]
+    pd.testing.assert_frame_equal(frame, original)
+
+
+def test_filter_rows_by_range_does_not_coerce_invalid_values_to_a_bar():
+    frame = pd.DataFrame({"entry_bar": ["1", "oops", "3"], "value": ["a", "b", "c"]})
+
+    # A non-numeric value is never treated as if it were bar 1...
+    narrowed = workflow.filter_rows_by_range(frame, "entry_bar", 1, 1)
+    assert list(narrowed["value"]) == ["a"]
+    # ...and a full range leaves it untouched rather than rewriting or dropping it.
+    full = workflow.filter_rows_by_range(frame, "entry_bar", 1, 3)
+    pd.testing.assert_frame_equal(full, frame)
+
+
+def test_filter_rows_by_range_intersects_with_filter_rows():
+    frame = pd.DataFrame(
+        {"direction": ["LONG", "SHORT", "LONG"], "entry_bar": [1, 3, 5]}
+    )
+
+    categorical = workflow.filter_rows(frame, {"direction": ["LONG"]})
+    result = workflow.filter_rows_by_range(categorical, "entry_bar", 4, 6)
+
+    assert list(result["entry_bar"]) == [5]
